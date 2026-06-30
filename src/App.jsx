@@ -49,7 +49,7 @@ const STYLES = {
   ivory: "#F2EDDF", rust: "#B85C3A", muted: "#8A9BB0", border: "#2A3D57",
 };
 
-const API_KEY = "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";
+const API_KEY = "const API_KEY = import.meta.env.VITE_API_KEY;";
 
 export default function App() {
   const [view, setView] = useState("marty");
