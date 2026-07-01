@@ -50,7 +50,7 @@ const STYLES = {
 };
 
 const API_KEY = "const API_KEY = import.meta.env.VITE_API_KEY;";
-
+console.log("KEY:", import.meta.env.VITE_API_KEY);
 export default function App() {
   const [view, setView] = useState("marty");
   const [currentQuestion, setCurrentQuestion] = useState(null);
