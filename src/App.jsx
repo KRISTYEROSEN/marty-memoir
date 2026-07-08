@@ -10,28 +10,23 @@ const STYLES = {
 function buildSystemPrompt(dossier) {
   return `You are an AI biographer interviewing Marty Kupersmith (stage name Marty Sanders), an 82-year-old musician from Brooklyn NY who has lived in Warwick NY for many years. He was a guitarist and songwriter for Jay and the Americans and wants to write a book about his life.
 
-${dossier ? `RESEARCH DOSSIER — everything publicly known about Marty from web research. Use this to ask specific, informed questions (about bandmates by name, specific songs, specific events):
+You interview like a great radio journalist: warm, curious, genuinely listening. When Marty's answer contains something interesting, specific, or emotional, you follow up on THAT — a name he dropped, a place, a feeling — before moving to new topics. Stories live in the follow-ups.
+
+${dossier ? `RESEARCH DOSSIER — everything publicly known about Marty from web research. Use this to ask specific, informed questions:
 
 ${dossier}
 
 ` : `No research dossier is loaded yet. Ask warm general questions about his life.`}
 
 CHAPTERS TO BUILD TOWARD:
-1. Early Life (Brooklyn childhood, family, school)
-2. Music Career (how he got started, first gigs)
-3. The Band Years (Jay and the Americans, touring, stories)
-4. Songwriting (writing process, famous songs, collaborations)
-5. Wild Stories (unexpected adventures, the reptile work)
-6. Warwick Life (moving upstate, the community)
-7. Family (relationships, kids, legacy)
+1. Early Life  2. Music Career  3. The Band Years  4. Songwriting  5. Wild Stories  6. Warwick Life  7. Family
 
 RULES:
 - Ask ONE question at a time, never two
-- Keep questions warm, simple, conversational
-- Use sensory questions: what did it smell like, who else was there
-- Use the dossier to ask about SPECIFIC people, songs, and events by name — that unlocks memories
-- Only reference facts from the dossier — never invent facts about his life
-- Build trust before asking about anything sensitive or painful
+- Questions must sound natural SPOKEN ALOUD — short, conversational, no long setups
+- If his last answer has a thread worth pulling, pull it (a follow-up). Otherwise move somewhere fresh.
+- Use the dossier for specifics — names, songs, dates — but never invent facts
+- Build trust before anything sensitive or painful
 - Never use the word "journey"
 - Never summarize his answer back to him
 - Don't rush to the famous material — earn it
@@ -39,13 +34,14 @@ RULES:
 Respond in JSON only, no markdown, no preamble:
 {
   "question": "Your single warm question for Marty",
-  "chapter": "Which chapter this question serves",
-  "interviewerNote": "Private note about strategy"
+  "chapter": "Which chapter this serves",
+  "isFollowUp": true or false,
+  "interviewerNote": "Private note: what you noticed in his answer, threads to pull later"
 }`;
 }
 
 export default function App() {
-  const [view, setView] = useState("marty");
+  const [view, setView] = useState("welcome");
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [currentChapter, setCurrentChapter] = useState(null);
   const [currentPhoto, setCurrentPhoto] = useState(null);
@@ -58,6 +54,7 @@ export default function App() {
   const [headerTaps, setHeaderTaps] = useState(0);
   const [isResearching, setIsResearching] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [liveTranscript, setLiveTranscript] = useState("");
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -65,6 +62,9 @@ export default function App() {
   const tapTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
   const dossierRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const transcriptRef = useRef("");
+  const audioPlayerRef = useRef(null);
 
   useEffect(() => {
     init();
@@ -92,7 +92,33 @@ export default function App() {
     }
     if (!Array.isArray(existing)) existing = [];
     setEntries(existing);
-    fetchNextQuestion(existing, loadedDossier);
+    fetchNextQuestion(existing, loadedDossier, false);
+  }
+
+  async function speak(text) {
+    if (!text) return;
+    try {
+      if (audioPlayerRef.current) {
+        audioPlayerRef.current.pause();
+      }
+      const res = await fetch("/api/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      if (!res.ok) throw new Error("speech failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioPlayerRef.current = audio;
+      await audio.play();
+    } catch {
+      try {
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 0.92;
+        window.speechSynthesis.speak(u);
+      } catch {}
+    }
   }
 
   async function callClaude(body) {
@@ -104,18 +130,22 @@ export default function App() {
     return res.json();
   }
 
-  async function fetchNextQuestion(existingEntries, dossierText) {
+  async function fetchNextQuestion(existingEntries, dossierText, speakIt = true) {
     setIsLoading(true);
     setIsSaved(false);
     setCurrentPhoto(null);
     const d = dossierText !== undefined ? dossierText : dossierRef.current;
     try {
-      const history = existingEntries.slice(-10).map(e => ({
-        question: e.question, chapter: e.chapter
+      const history = existingEntries.slice(-8).map(e => ({
+        question: e.question,
+        chapter: e.chapter,
+        martysAnswer: e.transcript ? e.transcript.slice(0, 600) : "(no transcript captured)"
       }));
       const prompt = existingEntries.length === 0
-        ? 'Return this exact JSON: {"question": "Marty, where did you grow up — and what was your neighborhood like?", "chapter": "Early Life", "interviewerNote": "Warm opener."}'
-        : `Recent questions asked: ${JSON.stringify(history)}. What is the best next question? Vary chapters over time and use the dossier for specifics.`;
+        ? 'Return this exact JSON: {"question": "Marty, where did you grow up — and what was your neighborhood like?", "chapter": "Early Life", "isFollowUp": false, "interviewerNote": "Warm opener."}'
+        : `Here are the recent questions AND what Marty actually said in his answers: ${JSON.stringify(history)}. 
+
+Like a good reporter: if his most recent answer contains a specific person, place, moment, or emotion worth digging into, ask a follow-up about it. If that thread is exhausted, move somewhere fresh using the dossier. What's your next question?`;
 
       const data = await callClaude({
         model: "claude-sonnet-4-6",
@@ -128,9 +158,12 @@ export default function App() {
       const parsed = JSON.parse(clean);
       setCurrentQuestion(parsed.question);
       setCurrentChapter(parsed.chapter);
+      if (speakIt) speak(parsed.question);
     } catch {
-      setCurrentQuestion("Tell me about a moment from your life that you still think about.");
+      const fallback = "Tell me about a moment from your life that you still think about.";
+      setCurrentQuestion(fallback);
       setCurrentChapter("Early Life");
+      if (speakIt) speak(fallback);
     }
     setIsLoading(false);
   }
@@ -168,7 +201,7 @@ export default function App() {
           role: "user",
           content: [
             { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
-            { type: "text", text: 'Marty just uploaded this photo because he wants to talk about it. Look at the photo carefully. If you can connect it to anything in the research dossier (a bandmate, an era, a place), use that. Ask him ONE warm question about it. Respond in the usual JSON format.' }
+            { type: "text", text: 'Marty just uploaded this photo because he wants to talk about it. Look carefully. If it connects to anything in the dossier, use that. Ask ONE warm question about it. Usual JSON format.' }
           ]
         }]
       });
@@ -177,16 +210,47 @@ export default function App() {
       const parsed = JSON.parse(clean);
       setCurrentQuestion(parsed.question);
       setCurrentChapter(parsed.chapter || "Wild Stories");
+      speak(parsed.question);
     } catch {
-      setCurrentQuestion("What a great picture, Marty. Tell me about it — who's there, and when was this?");
+      const fallback = "What a great picture, Marty. Tell me about it — who's there, and when was this?";
+      setCurrentQuestion(fallback);
       setCurrentChapter("Wild Stories");
+      speak(fallback);
     }
     setIsSaved(false);
     setIsLoading(false);
     e.target.value = "";
   }
 
+  function startTranscription() {
+    transcriptRef.current = "";
+    setLiveTranscript("");
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    try {
+      const rec = new SR();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = "en-US";
+      rec.onresult = (event) => {
+        let finalText = "";
+        for (let i = 0; i < event.results.length; i++) {
+          if (event.results[i].isFinal) finalText += event.results[i][0].transcript + " ";
+        }
+        if (finalText) {
+          transcriptRef.current = finalText;
+          setLiveTranscript(finalText);
+        }
+      };
+      rec.onerror = () => {};
+      rec.start();
+      recognitionRef.current = rec;
+    } catch {}
+  }
+
   async function startRecording() {
+    if (audioPlayerRef.current) audioPlayerRef.current.pause();
+    window.speechSynthesis.cancel();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream);
@@ -197,6 +261,7 @@ export default function App() {
       setIsRecording(true);
       setRecordingSeconds(0);
       timerRef.current = setInterval(() => setRecordingSeconds(s => s + 1), 1000);
+      startTranscription();
     } catch {
       alert("Microphone access needed. Please allow mic access and try again.");
     }
@@ -206,6 +271,9 @@ export default function App() {
     if (!mediaRecorderRef.current) return;
     const mr = mediaRecorderRef.current;
     clearInterval(timerRef.current);
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch {}
+    }
     const duration = recordingSeconds;
     mr.onstop = async () => {
       const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
@@ -214,6 +282,7 @@ export default function App() {
         const entry = {
           id: Date.now(), question: currentQuestion, chapter: currentChapter,
           audioBase64: reader.result, duration,
+          transcript: transcriptRef.current || "",
           photo: currentPhoto || null,
           date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
         };
@@ -231,6 +300,7 @@ export default function App() {
         } catch {}
         setIsSaved(true);
         setIsRecording(false);
+        setLiveTranscript("");
         mr.stream.getTracks().forEach(t => t.stop());
         setTimeout(() => fetchNextQuestion(newEntries), 1500);
       };
@@ -271,6 +341,25 @@ export default function App() {
 
   const progress = Math.min(100, Math.round((entries.length / 35) * 100));
 
+  if (view === "welcome") {
+    return (
+      <div style={{ minHeight: "100vh", background: STYLES.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Georgia', serif", textAlign: "center" }}>
+        <div style={{ color: STYLES.gold, fontSize: 12, letterSpacing: 4, textTransform: "uppercase", marginBottom: 12 }}>The Story of</div>
+        <div style={{ color: STYLES.ivory, fontSize: 34, fontWeight: "bold", marginBottom: 10 }}>Marty Kupersmith</div>
+        <div style={{ color: STYLES.muted, fontSize: 14, marginBottom: 50 }}>A Life in Music & Stories</div>
+        <button
+          onClick={() => {
+            setView("marty");
+            if (currentQuestion) speak(currentQuestion);
+          }}
+          style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 16, padding: "22px 44px", fontSize: 22, cursor: "pointer", fontFamily: "'Georgia', serif", boxShadow: "0 4px 24px rgba(184,92,58,0.5)" }}
+        >
+          Tap to begin
+        </button>
+      </div>
+    );
+  }
+
   if (view === "marty") {
     return (
       <div style={{ minHeight: "100vh", background: STYLES.bg, display: "flex", flexDirection: "column", alignItems: "center", padding: "0 20px 40px", fontFamily: "'Georgia', serif" }}>
@@ -309,15 +398,18 @@ export default function App() {
               <div style={{ color: STYLES.muted, fontSize: 13, marginTop: 8 }}>Getting your next question...</div>
             </div>
           ) : (
-            <div>
+            <div style={{ width: "100%" }}>
               <div style={{ color: STYLES.gold, fontSize: 10, letterSpacing: 3, textTransform: "uppercase", marginBottom: 14 }}>{currentChapter}</div>
               <div style={{ color: STYLES.ivory, fontSize: 19, lineHeight: 1.6 }}>{currentQuestion}</div>
+              <button onClick={() => speak(currentQuestion)} style={{ marginTop: 16, background: "transparent", border: `1px solid ${STYLES.border}`, color: STYLES.muted, borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer" }}>
+                🔊 Hear it again
+              </button>
             </div>
           )}
         </div>
 
         {!isLoading && !isSaved && (
-          <div style={{ textAlign: "center" }}>
+          <div style={{ textAlign: "center", width: "100%", maxWidth: 480 }}>
             {!isRecording ? (
               <div>
                 <button onClick={startRecording} style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 32, cursor: "pointer", boxShadow: "0 4px 20px rgba(184,92,58,0.4)" }}>
@@ -338,6 +430,11 @@ export default function App() {
                 <button onClick={stopAndSave} style={{ background: STYLES.gold, color: STYLES.bg, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 18, fontWeight: "bold", cursor: "pointer", boxShadow: "0 4px 20px rgba(201,168,76,0.4)" }}>
                   DONE
                 </button>
+                {liveTranscript && (
+                  <div style={{ marginTop: 20, color: STYLES.muted, fontSize: 13, fontStyle: "italic", lineHeight: 1.5, textAlign: "left", background: STYLES.card, borderRadius: 10, padding: 14, border: `1px solid ${STYLES.border}` }}>
+                    {liveTranscript.slice(-300)}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -390,6 +487,11 @@ export default function App() {
                   <img src={entry.photo} alt="story" style={{ maxWidth: "100%", maxHeight: 200, borderRadius: 8, marginBottom: 10 }} />
                 )}
                 <div style={{ color: STYLES.ivory, fontSize: 15, marginBottom: 12, lineHeight: 1.5 }}>{entry.question}</div>
+                {entry.transcript && (
+                  <div style={{ color: STYLES.muted, fontSize: 14, fontStyle: "italic", lineHeight: 1.6, marginBottom: 12, borderLeft: `3px solid ${STYLES.gold}`, paddingLeft: 12 }}>
+                    "{entry.transcript}"
+                  </div>
+                )}
                 {entry.audioBase64 && <audio controls src={entry.audioBase64} style={{ width: "100%", height: 36 }} />}
               </div>
             ))}
@@ -418,7 +520,7 @@ export default function App() {
         {adminTab === "research" && (
           <div>
             <div style={{ color: STYLES.muted, fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>
-              Run a deep web search on Marty Sanders / Marty Kupersmith — his career, bandmates, songs, and reptile work. The AI saves what it finds and uses it to ask better, more specific questions. Run this once (or again anytime to refresh it). It takes a minute or two.
+              Run a deep web search on Marty Sanders / Marty Kupersmith. The AI saves what it finds and uses it to ask better questions.
             </div>
             <button onClick={runResearch} disabled={isResearching} style={{ background: isResearching ? STYLES.border : STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 15, cursor: isResearching ? "default" : "pointer", marginBottom: 20 }}>
               {isResearching ? "Researching... (this takes a minute)" : "🔍 Research Marty"}
