@@ -130,7 +130,31 @@ export default function App() {
     });
     return res.json();
   }
+async function fetchFollowUp(lastEntry, allEntries) {
+    setIsLoading(true);
+    setIsSaved(false);
+    setCurrentPhoto(null);
+    try {
+      const data = await callClaude({
+        model: "claude-sonnet-4-6",
+        max_tokens: 500,
+        system: buildSystemPrompt(dossierRef.current),
+        messages: [{ role: "user", content: `Marty was just asked: "${lastEntry.question}" and he answered: "${lastEntry.transcript}". 
 
+Like a good reporter, ask ONE follow-up question digging into the most interesting specific thing he just said — a name, a place, a moment, a feeling. Usual JSON format.` }]
+      });
+      const text = data.content?.[0]?.text || "{}";
+      const clean = text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      setCurrentQuestion(parsed.question);
+      setCurrentChapter(parsed.chapter || lastEntry.chapter);
+      speak(parsed.question);
+    } catch {
+      fetchNextQuestion(allEntries);
+      return;
+    }
+    setIsLoading(false);
+  }
   async function fetchNextQuestion(existingEntries, dossierText, speakIt = true) {
     setIsLoading(true);
     setIsSaved(false);
@@ -307,6 +331,44 @@ Like a good reporter: if his most recent answer contains a specific person, plac
           } catch {}
           setIsFreeTell(false);
         }
+	if (!entry.transcript || entry.transcript.trim().length < 10) {
+          try {
+            const tRes = await fetch("/api/transcribe", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ audioBase64: entry.audioBase64 })
+            });
+            if (tRes.ok) {
+              const tData = await tRes.json();
+              if (tData.transcript) entry.transcript = tData.transcript;
+            }
+          } catch {}
+        }
+if (!entry.transcript || entry.transcript.trim().length < 10) {
+          try {
+            const tRes = await fetch("/api/transcribe", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ audioBase64: entry.audioBase64 })
+            });
+            if (tRes.ok) {
+              const tData = await tRes.json();
+              if (tData.transcript) entry.transcript = tData.transcript;
+            }
+          } catch {}
+        }
+        if (isFreeTell && entry.transcript) {
+          try {
+            const data = await callClaude({
+              model: "claude-sonnet-4-6",
+              max_tokens: 200,
+              messages: [{ role: "user", content: `Marty just told this story unprompted: "${entry.transcript.slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
+            });
+            const ch = data.content?.[0]?.text?.trim();
+            if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
+          } catch {}
+          setIsFreeTell(false);
+        }
 	const newEntries = [...entries, entry];
         setEntries(newEntries);
         try {
@@ -323,7 +385,13 @@ Like a good reporter: if his most recent answer contains a specific person, plac
         setIsRecording(false);
         setLiveTranscript("");
         mr.stream.getTracks().forEach(t => t.stop());
-        setTimeout(() => fetchNextQuestion(newEntries), 1500);
+        setTimeout(() => {
+          if (entry.transcript && entry.transcript.trim().length > 10) {
+            fetchFollowUp(entry, newEntries);
+          } else {
+            fetchNextQuestion(newEntries);
+          }
+        }, 1500);
       };
       reader.readAsDataURL(blob);
     };
