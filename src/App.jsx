@@ -10,11 +10,10 @@ Known facts about Marty:
 - Born in Brooklyn, grew up in Bensonhurst and Borough Park neighborhoods
 - Passionate about reptiles, member of NY Herpetological Society, met at Museum of Natural History
 - Warwick Police Department's official snake-catching contact
-- Was bitten by a rattlesnake in 2019, treated at St. Anthony's and a Bronx hospital
+- Was bitten by a rattlesnake in 2019
 - Served in US Army Reserves
 - First wife was in the witness protection program
 - Wants to write a book about his life
-- Has incredible photos from his career and life
 
 CHAPTERS TO BUILD TOWARD:
 1. Early Life (Brooklyn childhood, family, school)
@@ -33,13 +32,12 @@ RULES:
 - Never use the word "journey"
 - Never summarize his answer back to him
 - Don't rush to the famous material — earn it
-- Reference earlier answers naturally when you have them
 
 Respond in JSON only, no markdown, no preamble:
 {
   "question": "Your single warm question for Marty",
   "chapter": "Which chapter this question serves",
-  "interviewerNote": "Private note to yourself about strategy"
+  "interviewerNote": "Private note about strategy"
 }`;
 
 const CHAPTERS = ["Early Life","Music Career","The Band Years","Songwriting","Wild Stories","Warwick Life","Family"];
@@ -49,12 +47,11 @@ const STYLES = {
   ivory: "#F2EDDF", rust: "#B85C3A", muted: "#8A9BB0", border: "#2A3D57",
 };
 
-const API_KEY = "const API_KEY = import.meta.env.VITE_API_KEY;";
-console.log("KEY:", import.meta.env.VITE_API_KEY);
 export default function App() {
   const [view, setView] = useState("marty");
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [currentChapter, setCurrentChapter] = useState(null);
+  const [currentPhoto, setCurrentPhoto] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -69,6 +66,7 @@ export default function App() {
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
   const tapTimeoutRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("marty_entries");
@@ -77,28 +75,33 @@ export default function App() {
     fetchNextQuestion(existing);
   }, []);
 
+  async function callClaude(body) {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    return res.json();
+  }
+
   async function fetchNextQuestion(existingEntries) {
     setIsLoading(true);
     setIsSaved(false);
+    setCurrentPhoto(null);
     try {
       const history = existingEntries.slice(-10).map(e => ({
         question: e.question, chapter: e.chapter
       }));
       const prompt = existingEntries.length === 0
-      ? "Return this exact JSON: {\"question\": \"Marty, where did you grow up — and what was your neighborhood like?\", \"chapter\": \"Early Life\", \"interviewerNote\": \"Warm opener to get him talking.\"}"
+        ? 'Return this exact JSON: {"question": "Marty, where did you grow up — and what was your neighborhood like?", "chapter": "Early Life", "interviewerNote": "Warm opener."}'
         : `Recent questions asked: ${JSON.stringify(history)}. What is the best next question?`;
 
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 500,
-          system: MARTY_BIO_CONTEXT,
-          messages: [{ role: "user", content: prompt }]
-        })
+      const data = await callClaude({
+        model: "claude-sonnet-4-6",
+        max_tokens: 500,
+        system: MARTY_BIO_CONTEXT,
+        messages: [{ role: "user", content: prompt }]
       });
-      const data = await res.json();
       const text = data.content?.[0]?.text || "{}";
       const clean = text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
@@ -111,12 +114,63 @@ export default function App() {
     setIsLoading(false);
   }
 
+  function shrinkImage(file) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxSize = 800;
+        let w = img.width, h = img.height;
+        if (w > h && w > maxSize) { h = h * (maxSize / w); w = maxSize; }
+        else if (h > maxSize) { w = w * (maxSize / h); h = maxSize; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.7));
+      };
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  async function handlePhotoUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsLoading(true);
+    const dataUrl = await shrinkImage(file);
+    setCurrentPhoto(dataUrl);
+    try {
+      const base64 = dataUrl.split(",")[1];
+      const data = await callClaude({
+        model: "claude-sonnet-4-6",
+        max_tokens: 500,
+        system: MARTY_BIO_CONTEXT,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+            { type: "text", text: 'Marty just uploaded this photo because he wants to talk about it. Look at the photo and ask him ONE warm question about it. Respond in the usual JSON format. Set chapter based on what the photo seems to show.' }
+          ]
+        }]
+      });
+      const text = data.content?.[0]?.text || "{}";
+      const clean = text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      setCurrentQuestion(parsed.question);
+      setCurrentChapter(parsed.chapter || "Wild Stories");
+    } catch {
+      setCurrentQuestion("What a great picture, Marty. Tell me about it — who's there, and when was this?");
+      setCurrentChapter("Wild Stories");
+    }
+    setIsSaved(false);
+    setIsLoading(false);
+    e.target.value = "";
+  }
+
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream);
       audioChunksRef.current = [];
-      mr.ondataavailable = e => audioChunksRef.current.push(e.data);
+      mr.ondataavailable = ev => audioChunksRef.current.push(ev.data);
       mr.start();
       mediaRecorderRef.current = mr;
       setIsRecording(true);
@@ -136,15 +190,19 @@ export default function App() {
       const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
       const reader = new FileReader();
       reader.onloadend = async () => {
-        const base64 = reader.result;
         const entry = {
           id: Date.now(), question: currentQuestion, chapter: currentChapter,
-          audioBase64: base64, duration,
+          audioBase64: reader.result, duration,
+          photo: currentPhoto || null,
           date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
         };
         const newEntries = [...entries, entry];
         setEntries(newEntries);
-        localStorage.setItem("marty_entries", JSON.stringify(newEntries));
+        try {
+          localStorage.setItem("marty_entries", JSON.stringify(newEntries));
+        } catch {
+          alert("Storage is full — tell Kristy!");
+        }
         setIsSaved(true);
         setIsRecording(false);
         mr.stream.getTracks().forEach(t => t.stop());
@@ -167,17 +225,12 @@ export default function App() {
     setIsResearching(true);
     setResearchResult("");
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-          messages: [{ role: "user", content: "Search for everything publicly available about Marty Kupersmith — musician, Jay and the Americans, Warwick NY. Summarize all findings in detail." }]
-        })
+      const data = await callClaude({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1000,
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        messages: [{ role: "user", content: "Search for everything publicly available about Marty Kupersmith — musician, Jay and the Americans, Warwick NY. Summarize all findings in detail." }]
       });
-      const data = await res.json();
       const text = data.content.filter(b => b.type === "text").map(b => b.text).join("\n");
       setResearchResult(text || "No results found.");
     } catch (e) {
@@ -212,7 +265,13 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ width: "100%", maxWidth: 480, background: STYLES.card, borderRadius: 16, padding: "28px 24px", border: `1px solid ${STYLES.border}`, marginBottom: 28, minHeight: 160, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {currentPhoto && !isSaved && (
+          <div style={{ width: "100%", maxWidth: 480, marginBottom: 16, textAlign: "center" }}>
+            <img src={currentPhoto} alt="Marty's photo" style={{ maxWidth: "100%", maxHeight: 260, borderRadius: 12, border: `2px solid ${STYLES.gold}` }} />
+          </div>
+        )}
+
+        <div style={{ width: "100%", maxWidth: 480, background: STYLES.card, borderRadius: 16, padding: "28px 24px", border: `1px solid ${STYLES.border}`, marginBottom: 28, minHeight: 140, display: "flex", alignItems: "center", justifyContent: "center" }}>
           {isLoading ? (
             <div style={{ color: STYLES.muted, fontSize: 15, textAlign: "center" }}>
               <div style={{ fontSize: 28, marginBottom: 12 }}>📖</div>
@@ -235,9 +294,19 @@ export default function App() {
         {!isLoading && !isSaved && (
           <div style={{ textAlign: "center" }}>
             {!isRecording ? (
-              <button onClick={startRecording} style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 32, cursor: "pointer", boxShadow: "0 4px 20px rgba(184,92,58,0.4)" }}>
-                🎙️
-              </button>
+              <div>
+                <button onClick={startRecording} style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 32, cursor: "pointer", boxShadow: "0 4px 20px rgba(184,92,58,0.4)" }}>
+                  🎙️
+                </button>
+                <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 14 }}>Tap the mic and start talking</div>
+
+                <div style={{ marginTop: 30 }}>
+                  <button onClick={() => fileInputRef.current?.click()} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
+                    📷 I want to talk about a picture
+                  </button>
+                  <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePhotoUpload} style={{ display: "none" }} />
+                </div>
+              </div>
             ) : (
               <div>
                 <div style={{ color: STYLES.rust, fontSize: 13, marginBottom: 12, letterSpacing: 2 }}>● RECORDING — {recordingSeconds}s</div>
@@ -246,7 +315,6 @@ export default function App() {
                 </button>
               </div>
             )}
-            {!isRecording && <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 14 }}>Tap the mic and start talking</div>}
           </div>
         )}
       </div>
@@ -293,6 +361,9 @@ export default function App() {
                   <span style={{ color: STYLES.gold, fontSize: 11, letterSpacing: 2, textTransform: "uppercase" }}>{entry.chapter}</span>
                   <span style={{ color: STYLES.muted, fontSize: 11 }}>{entry.date} · {entry.duration}s</span>
                 </div>
+                {entry.photo && (
+                  <img src={entry.photo} alt="story" style={{ maxWidth: "100%", maxHeight: 200, borderRadius: 8, marginBottom: 10 }} />
+                )}
                 <div style={{ color: STYLES.ivory, fontSize: 15, marginBottom: 12, lineHeight: 1.5 }}>{entry.question}</div>
                 {entry.audioBase64 && <audio controls src={entry.audioBase64} style={{ width: "100%", height: 36 }} />}
               </div>
@@ -322,7 +393,7 @@ export default function App() {
         {adminTab === "research" && (
           <div>
             <div style={{ color: STYLES.muted, fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>
-              Run a web search to pull everything publicly known about Marty — articles, discography, band history, interviews.
+              Run a web search to pull everything publicly known about Marty.
             </div>
             <button onClick={runResearch} disabled={isResearching} style={{ background: isResearching ? STYLES.border : STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 15, cursor: isResearching ? "default" : "pointer", marginBottom: 20 }}>
               {isResearching ? "Researching..." : "🔍 Research Marty"}
