@@ -55,6 +55,7 @@ export default function App() {
   const [isResearching, setIsResearching] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [liveTranscript, setLiveTranscript] = useState("");
+  const [isFreeTell, setIsFreeTell] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -248,6 +249,14 @@ Like a good reporter: if his most recent answer contains a specific person, plac
     } catch {}
   }
 
+  async function startFreeTell() {
+    setIsFreeTell(true);
+    setCurrentQuestion("Go ahead, Marty — I'm listening.");
+    setCurrentChapter("Your Story");
+    speak("Go ahead, Marty. I'm listening.");
+    startRecording();
+  }
+
   async function startRecording() {
     if (audioPlayerRef.current) audioPlayerRef.current.pause();
     window.speechSynthesis.cancel();
@@ -286,7 +295,19 @@ Like a good reporter: if his most recent answer contains a specific person, plac
           photo: currentPhoto || null,
           date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
         };
-        const newEntries = [...entries, entry];
+        if (isFreeTell && entry.transcript) {
+          try {
+            const data = await callClaude({
+              model: "claude-sonnet-4-6",
+              max_tokens: 200,
+              messages: [{ role: "user", content: `Marty just told this story unprompted: "${entry.transcript.slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
+            });
+            const ch = data.content?.[0]?.text?.trim();
+            if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
+          } catch {}
+          setIsFreeTell(false);
+        }
+	const newEntries = [...entries, entry];
         setEntries(newEntries);
         try {
           localStorage.setItem("marty_entries", JSON.stringify(newEntries));
@@ -417,7 +438,10 @@ Like a good reporter: if his most recent answer contains a specific person, plac
                 </button>
                 <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 14 }}>Tap the mic and start talking</div>
 
-                <div style={{ marginTop: 30 }}>
+     <div style={{ marginTop: 30, display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
+                  <button onClick={startFreeTell} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
+                    ✨ I have a story to tell
+                  </button>
                   <button onClick={() => fileInputRef.current?.click()} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
                     📷 I want to talk about a picture
                   </button>
