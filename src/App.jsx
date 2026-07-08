@@ -1,34 +1,37 @@
 import { useState, useRef, useEffect } from "react";
 
-const MARTY_BIO_CONTEXT = `You are an AI biographer interviewing Marty Kupersmith, an 82-year-old musician from Brooklyn NY who has lived in Warwick NY for 40 years.
+const CHAPTERS = ["Early Life","Music Career","The Band Years","Songwriting","Wild Stories","Warwick Life","Family"];
 
-Known facts about Marty:
-- Guitarist and songwriter for Jay and the Americans since 1962 (used stage name "Sanders")
-- Hits include "Come a Little Bit Closer" (1964), "Caramia" (1965), "This Magic Moment" (top ten 1969)
-- Collaborated with Joan Jett and wrote songs that became big hits for her and other artists
-- Jay and the Americans inducted into Vocal Group Hall of Fame 2002
-- Born in Brooklyn, grew up in Bensonhurst and Borough Park neighborhoods
-- Passionate about reptiles, member of NY Herpetological Society, met at Museum of Natural History
-- Warwick Police Department's official snake-catching contact
-- Was bitten by a rattlesnake in 2019
-- Served in US Army Reserves
-- First wife was in the witness protection program
-- Wants to write a book about his life
+const STYLES = {
+  bg: "#0F1B2D", card: "#1A2B42", gold: "#C9A84C",
+  ivory: "#F2EDDF", rust: "#B85C3A", muted: "#8A9BB0", border: "#2A3D57",
+};
+
+function buildSystemPrompt(dossier) {
+  return `You are an AI biographer interviewing Marty Kupersmith (stage name Marty Sanders), an 82-year-old musician from Brooklyn NY who has lived in Warwick NY for many years. He was a guitarist and songwriter for Jay and the Americans and wants to write a book about his life.
+
+${dossier ? `RESEARCH DOSSIER — everything publicly known about Marty from web research. Use this to ask specific, informed questions (about bandmates by name, specific songs, specific events):
+
+${dossier}
+
+` : `No research dossier is loaded yet. Ask warm general questions about his life.`}
 
 CHAPTERS TO BUILD TOWARD:
 1. Early Life (Brooklyn childhood, family, school)
 2. Music Career (how he got started, first gigs)
 3. The Band Years (Jay and the Americans, touring, stories)
-4. Songwriting (writing process, famous songs, Joan Jett)
-5. Wild Stories (the rattlesnake, the witness protection wife, Army)
-6. Warwick Life (moving upstate, the community, reptile work)
+4. Songwriting (writing process, famous songs, collaborations)
+5. Wild Stories (unexpected adventures, the reptile work)
+6. Warwick Life (moving upstate, the community)
 7. Family (relationships, kids, legacy)
 
 RULES:
 - Ask ONE question at a time, never two
 - Keep questions warm, simple, conversational
 - Use sensory questions: what did it smell like, who else was there
-- Build trust before asking about sensitive material
+- Use the dossier to ask about SPECIFIC people, songs, and events by name — that unlocks memories
+- Only reference facts from the dossier — never invent facts about his life
+- Build trust before asking about anything sensitive or painful
 - Never use the word "journey"
 - Never summarize his answer back to him
 - Don't rush to the famous material — earn it
@@ -39,13 +42,7 @@ Respond in JSON only, no markdown, no preamble:
   "chapter": "Which chapter this question serves",
   "interviewerNote": "Private note about strategy"
 }`;
-
-const CHAPTERS = ["Early Life","Music Career","The Band Years","Songwriting","Wild Stories","Warwick Life","Family"];
-
-const STYLES = {
-  bg: "#0F1B2D", card: "#1A2B42", gold: "#C9A84C",
-  ivory: "#F2EDDF", rust: "#B85C3A", muted: "#8A9BB0", border: "#2A3D57",
-};
+}
 
 export default function App() {
   const [view, setView] = useState("marty");
@@ -56,9 +53,9 @@ export default function App() {
   const [isSaved, setIsSaved] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [entries, setEntries] = useState([]);
+  const [dossier, setDossier] = useState(null);
   const [adminTab, setAdminTab] = useState("answers");
   const [headerTaps, setHeaderTaps] = useState(0);
-  const [researchResult, setResearchResult] = useState("");
   const [isResearching, setIsResearching] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
@@ -67,13 +64,36 @@ export default function App() {
   const timerRef = useRef(null);
   const tapTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
+  const dossierRef = useRef(null);
 
   useEffect(() => {
-    const saved = localStorage.getItem("marty_entries");
-    const existing = saved ? JSON.parse(saved) : [];
-    setEntries(existing);
-    fetchNextQuestion(existing);
+    init();
   }, []);
+
+  async function init() {
+    let loadedDossier = null;
+    try {
+      const res = await fetch("/api/dossier");
+      if (res.ok) {
+        const data = await res.json();
+        loadedDossier = data.dossier || null;
+      }
+    } catch {}
+    dossierRef.current = loadedDossier;
+    setDossier(loadedDossier);
+
+    let existing = [];
+    try {
+      const res = await fetch("/api/entries");
+      if (res.ok) existing = await res.json();
+    } catch {
+      const saved = localStorage.getItem("marty_entries");
+      existing = saved ? JSON.parse(saved) : [];
+    }
+    if (!Array.isArray(existing)) existing = [];
+    setEntries(existing);
+    fetchNextQuestion(existing, loadedDossier);
+  }
 
   async function callClaude(body) {
     const res = await fetch("/api/chat", {
@@ -84,22 +104,23 @@ export default function App() {
     return res.json();
   }
 
-  async function fetchNextQuestion(existingEntries) {
+  async function fetchNextQuestion(existingEntries, dossierText) {
     setIsLoading(true);
     setIsSaved(false);
     setCurrentPhoto(null);
+    const d = dossierText !== undefined ? dossierText : dossierRef.current;
     try {
       const history = existingEntries.slice(-10).map(e => ({
         question: e.question, chapter: e.chapter
       }));
       const prompt = existingEntries.length === 0
         ? 'Return this exact JSON: {"question": "Marty, where did you grow up — and what was your neighborhood like?", "chapter": "Early Life", "interviewerNote": "Warm opener."}'
-        : `Recent questions asked: ${JSON.stringify(history)}. What is the best next question?`;
+        : `Recent questions asked: ${JSON.stringify(history)}. What is the best next question? Vary chapters over time and use the dossier for specifics.`;
 
       const data = await callClaude({
         model: "claude-sonnet-4-6",
         max_tokens: 500,
-        system: MARTY_BIO_CONTEXT,
+        system: buildSystemPrompt(d),
         messages: [{ role: "user", content: prompt }]
       });
       const text = data.content?.[0]?.text || "{}";
@@ -142,12 +163,12 @@ export default function App() {
       const data = await callClaude({
         model: "claude-sonnet-4-6",
         max_tokens: 500,
-        system: MARTY_BIO_CONTEXT,
+        system: buildSystemPrompt(dossierRef.current),
         messages: [{
           role: "user",
           content: [
             { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
-            { type: "text", text: 'Marty just uploaded this photo because he wants to talk about it. Look at the photo and ask him ONE warm question about it. Respond in the usual JSON format. Set chapter based on what the photo seems to show.' }
+            { type: "text", text: 'Marty just uploaded this photo because he wants to talk about it. Look at the photo carefully. If you can connect it to anything in the research dossier (a bandmate, an era, a place), use that. Ask him ONE warm question about it. Respond in the usual JSON format.' }
           ]
         }]
       });
@@ -200,9 +221,14 @@ export default function App() {
         setEntries(newEntries);
         try {
           localStorage.setItem("marty_entries", JSON.stringify(newEntries));
-        } catch {
-          alert("Storage is full — tell Kristy!");
-        }
+        } catch {}
+        try {
+          await fetch("/api/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(entry)
+          });
+        } catch {}
         setIsSaved(true);
         setIsRecording(false);
         mr.stream.getTracks().forEach(t => t.stop());
@@ -223,18 +249,17 @@ export default function App() {
 
   async function runResearch() {
     setIsResearching(true);
-    setResearchResult("");
     try {
-      const data = await callClaude({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-        messages: [{ role: "user", content: "Search for everything publicly available about Marty Kupersmith — musician, Jay and the Americans, Warwick NY. Summarize all findings in detail." }]
-      });
-      const text = data.content.filter(b => b.type === "text").map(b => b.text).join("\n");
-      setResearchResult(text || "No results found.");
+      const res = await fetch("/api/research", { method: "POST" });
+      const data = await res.json();
+      if (data.dossier) {
+        dossierRef.current = data.dossier;
+        setDossier(data.dossier);
+      } else {
+        alert("Research failed: " + (data.error || "unknown error"));
+      }
     } catch (e) {
-      setResearchResult("Research failed: " + e.message);
+      alert("Research failed: " + e.message);
     }
     setIsResearching(false);
   }
@@ -393,14 +418,14 @@ export default function App() {
         {adminTab === "research" && (
           <div>
             <div style={{ color: STYLES.muted, fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>
-              Run a web search to pull everything publicly known about Marty.
+              Run a deep web search on Marty Sanders / Marty Kupersmith — his career, bandmates, songs, and reptile work. The AI saves what it finds and uses it to ask better, more specific questions. Run this once (or again anytime to refresh it). It takes a minute or two.
             </div>
             <button onClick={runResearch} disabled={isResearching} style={{ background: isResearching ? STYLES.border : STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 15, cursor: isResearching ? "default" : "pointer", marginBottom: 20 }}>
-              {isResearching ? "Researching..." : "🔍 Research Marty"}
+              {isResearching ? "Researching... (this takes a minute)" : "🔍 Research Marty"}
             </button>
-            {researchResult && (
+            {dossier && (
               <div style={{ background: STYLES.card, borderRadius: 12, padding: 20, border: `1px solid ${STYLES.border}`, color: STYLES.ivory, fontSize: 14, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
-                {researchResult}
+                {dossier}
               </div>
             )}
           </div>
