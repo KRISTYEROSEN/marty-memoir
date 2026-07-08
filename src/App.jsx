@@ -88,7 +88,7 @@ export default function App() {
       ? "Return this exact JSON: {\"question\": \"Marty, where did you grow up — and what was your neighborhood like?\", \"chapter\": \"Early Life\", \"interviewerNote\": \"Warm opener to get him talking.\"}"
         : `Recent questions asked: ${JSON.stringify(history)}. What is the best next question?`;
 
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
         body: JSON.stringify({
@@ -167,7 +167,7 @@ export default function App() {
     setIsResearching(true);
     setResearchResult("");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
         body: JSON.stringify({
