@@ -48,14 +48,13 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isListeningIntent, setIsListeningIntent] = useState(false);
   const [entries, setEntries] = useState([]);
   const [dossier, setDossier] = useState(null);
   const [adminTab, setAdminTab] = useState("answers");
   const [headerTaps, setHeaderTaps] = useState(0);
   const [isResearching, setIsResearching] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [liveTranscript, setLiveTranscript] = useState("");
-  const [isFreeTell, setIsFreeTell] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -63,9 +62,9 @@ export default function App() {
   const tapTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
   const dossierRef = useRef(null);
-  const recognitionRef = useRef(null);
-  const transcriptRef = useRef("");
   const audioPlayerRef = useRef(null);
+  const isFreeTellRef = useRef(false);
+  const entriesRef = useRef([]);
 
   useEffect(() => {
     init();
@@ -92,34 +91,50 @@ export default function App() {
       existing = saved ? JSON.parse(saved) : [];
     }
     if (!Array.isArray(existing)) existing = [];
+    entriesRef.current = existing;
     setEntries(existing);
-    fetchNextQuestion(existing, loadedDossier, false);
   }
 
-  async function speak(text) {
-    if (!text) return;
-    try {
-      if (audioPlayerRef.current) {
-        audioPlayerRef.current.pause();
-      }
-      const res = await fetch("/api/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text })
-      });
-      if (!res.ok) throw new Error("speech failed");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audioPlayerRef.current = audio;
-      await audio.play();
-    } catch {
-      try {
-        const u = new SpeechSynthesisUtterance(text);
-        u.rate = 0.92;
-        window.speechSynthesis.speak(u);
-      } catch {}
+  function unlockAudio() {
+    if (!audioPlayerRef.current) {
+      const a = new Audio();
+      a.src = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7v///////////////////////////////////////////wAAAABMYXZjNTguMTMAAAAAAAAAAAAAAAAkAkAAAAAAAAABhiJmyDkAAAAAAAAAAAAAAAAAAAAA//sQZAAP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAETEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVV";
+      a.play().catch(() => {});
+      audioPlayerRef.current = a;
     }
+  }
+
+  function speakAndWait(text) {
+    return new Promise(async (resolve) => {
+      if (!text) return resolve();
+      setCurrentQuestion(text);
+      const safety = setTimeout(resolve, 20000);
+      try {
+        const res = await fetch("/api/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text })
+        });
+        if (!res.ok) throw new Error("speech failed");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const player = audioPlayerRef.current || new Audio();
+        audioPlayerRef.current = player;
+        player.onended = () => { clearTimeout(safety); resolve(); };
+        player.src = url;
+        await player.play();
+      } catch {
+        try {
+          const u = new SpeechSynthesisUtterance(text);
+          u.rate = 0.92;
+          u.onend = () => { clearTimeout(safety); resolve(); };
+          window.speechSynthesis.speak(u);
+        } catch {
+          clearTimeout(safety);
+          resolve();
+        }
+      }
+    });
   }
 
   async function callClaude(body) {
@@ -130,7 +145,102 @@ export default function App() {
     });
     return res.json();
   }
-async function fetchFollowUp(lastEntry, allEntries) {
+
+  async function transcribeBlob(blob, mimeType) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        try {
+          const tRes = await fetch("/api/transcribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audioBase64: reader.result, mimeType })
+          });
+          if (tRes.ok) {
+            const tData = await tRes.json();
+            resolve(tData.transcript || "");
+          } else resolve("");
+        } catch { resolve(""); }
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function beginSession() {
+    unlockAudio();
+    setView("marty");
+    setCurrentChapter("Hello");
+    await speakAndWait("Hi Marty! Do you have a story for me today, or should I ask you a question?");
+    setTimeout(listenForIntent, 700);
+  }
+
+  async function listenForIntent() {
+    setIsListeningIntent(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      const chunks = [];
+      mr.ondataavailable = ev => chunks.push(ev.data);
+      mr.start();
+      setTimeout(() => { try { mr.stop(); } catch {} }, 5000);
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const mime = mr.mimeType || "audio/mp4";
+        const blob = new Blob(chunks, { type: mime });
+        const heard = await transcribeBlob(blob, mime);
+        setIsListeningIntent(false);
+        routeIntent(heard);
+      };
+    } catch {
+      setIsListeningIntent(false);
+      setCurrentQuestion("Tap a button below whenever you're ready, Marty.");
+      setCurrentChapter("Hello");
+    }
+  }
+
+  async function routeIntent(heard) {
+    const lower = (heard || "").toLowerCase();
+    let intent = "unclear";
+    if (lower.includes("i have a story") || lower.includes("tell you a story") || lower.includes("got a story")) intent = "story";
+    else if (lower.includes("ask me") || lower.includes("ask away") || lower.includes("you ask")) intent = "question";
+    else if (lower.trim().length > 3) {
+      try {
+        const data = await callClaude({
+          model: "claude-sonnet-4-6",
+          max_tokens: 50,
+          messages: [{ role: "user", content: `Marty was asked "Do you have a story for me, or should I ask you a question?" He replied: "${heard}". NOTE: if the reply just echoes the question itself (e.g. contains "story for me" or "should I ask you"), that's microphone echo, not Marty — reply UNCLEAR. Does he want to TELL a story, or be ASKED a question? Reply with exactly one word: STORY, QUESTION, or UNCLEAR.` }]
+        });
+        const ans = data.content?.[0]?.text?.trim().toUpperCase() || "";
+        if (ans.includes("STORY")) intent = "story";
+        else if (ans.includes("QUESTION")) intent = "question";
+      } catch {}
+    }
+
+    if (intent === "story") {
+      startFreeTell();
+    } else if (intent === "question") {
+      fetchNextQuestion(entriesRef.current);
+    } else {
+      setCurrentChapter("Hello");
+      speakAndWait("No rush, Marty. Tap a button below whenever you're ready.");
+    }
+  }
+
+  async function startFreeTell() {
+    isFreeTellRef.current = true;
+    setCurrentChapter("Your Story");
+    setIsSaved(false);
+    setCurrentPhoto(null);
+    await speakAndWait("Go ahead, Marty — I'm listening.");
+    startRecording();
+  }
+
+  async function askMeQuestion() {
+    isFreeTellRef.current = false;
+    fetchNextQuestion(entriesRef.current);
+  }
+
+  async function fetchFollowUp(lastEntry, allEntries) {
     setIsLoading(true);
     setIsSaved(false);
     setCurrentPhoto(null);
@@ -146,20 +256,20 @@ Like a good reporter, ask ONE follow-up question digging into the most interesti
       const text = data.content?.[0]?.text || "{}";
       const clean = text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
-      setCurrentQuestion(parsed.question);
       setCurrentChapter(parsed.chapter || lastEntry.chapter);
-      speak(parsed.question);
+      setIsLoading(false);
+      speakAndWait(parsed.question);
     } catch {
+      setIsLoading(false);
       fetchNextQuestion(allEntries);
-      return;
     }
-    setIsLoading(false);
   }
-  async function fetchNextQuestion(existingEntries, dossierText, speakIt = true) {
+
+  async function fetchNextQuestion(existingEntries) {
     setIsLoading(true);
     setIsSaved(false);
     setCurrentPhoto(null);
-    const d = dossierText !== undefined ? dossierText : dossierRef.current;
+    const d = dossierRef.current;
     try {
       const history = existingEntries.slice(-8).map(e => ({
         question: e.question,
@@ -170,7 +280,7 @@ Like a good reporter, ask ONE follow-up question digging into the most interesti
         ? 'Return this exact JSON: {"question": "Marty, where did you grow up — and what was your neighborhood like?", "chapter": "Early Life", "isFollowUp": false, "interviewerNote": "Warm opener."}'
         : `Here are the recent questions AND what Marty actually said in his answers: ${JSON.stringify(history)}. 
 
-Like a good reporter: if his most recent answer contains a specific person, place, moment, or emotion worth digging into, ask a follow-up about it. If that thread is exhausted, move somewhere fresh using the dossier. What's your next question?`;
+Like a good reporter: if there's a strong thread in his recent answers worth pulling, pull it. Otherwise move somewhere fresh using the dossier. What's your next question?`;
 
       const data = await callClaude({
         model: "claude-sonnet-4-6",
@@ -181,16 +291,15 @@ Like a good reporter: if his most recent answer contains a specific person, plac
       const text = data.content?.[0]?.text || "{}";
       const clean = text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
-      setCurrentQuestion(parsed.question);
       setCurrentChapter(parsed.chapter);
-      if (speakIt) speak(parsed.question);
+      setIsLoading(false);
+      speakAndWait(parsed.question);
     } catch {
       const fallback = "Tell me about a moment from your life that you still think about.";
-      setCurrentQuestion(fallback);
       setCurrentChapter("Early Life");
-      if (speakIt) speak(fallback);
+      setIsLoading(false);
+      speakAndWait(fallback);
     }
-    setIsLoading(false);
   }
 
   function shrinkImage(file) {
@@ -214,6 +323,7 @@ Like a good reporter: if his most recent answer contains a specific person, plac
     const file = e.target.files?.[0];
     if (!file) return;
     setIsLoading(true);
+    isFreeTellRef.current = false;
     const dataUrl = await shrinkImage(file);
     setCurrentPhoto(dataUrl);
     try {
@@ -233,55 +343,20 @@ Like a good reporter: if his most recent answer contains a specific person, plac
       const text = data.content?.[0]?.text || "{}";
       const clean = text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
-      setCurrentQuestion(parsed.question);
       setCurrentChapter(parsed.chapter || "Wild Stories");
-      speak(parsed.question);
+      setIsLoading(false);
+      speakAndWait(parsed.question);
     } catch {
-      const fallback = "What a great picture, Marty. Tell me about it — who's there, and when was this?";
-      setCurrentQuestion(fallback);
       setCurrentChapter("Wild Stories");
-      speak(fallback);
+      setIsLoading(false);
+      speakAndWait("What a great picture, Marty. Tell me about it — who's there, and when was this?");
     }
     setIsSaved(false);
-    setIsLoading(false);
     e.target.value = "";
   }
 
-  function startTranscription() {
-    transcriptRef.current = "";
-    setLiveTranscript("");
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
-    try {
-      const rec = new SR();
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.lang = "en-US";
-      rec.onresult = (event) => {
-        let finalText = "";
-        for (let i = 0; i < event.results.length; i++) {
-          if (event.results[i].isFinal) finalText += event.results[i][0].transcript + " ";
-        }
-        if (finalText) {
-          transcriptRef.current = finalText;
-          setLiveTranscript(finalText);
-        }
-      };
-      rec.onerror = () => {};
-      rec.start();
-      recognitionRef.current = rec;
-    } catch {}
-  }
-
-  async function startFreeTell() {
-    setIsFreeTell(true);
-    setCurrentQuestion("Go ahead, Marty — I'm listening.");
-    setCurrentChapter("Your Story");
-    speak("Go ahead, Marty. I'm listening.");
-    startRecording();
-  }
-
   async function startRecording() {
+    unlockAudio();
     if (audioPlayerRef.current) audioPlayerRef.current.pause();
     window.speechSynthesis.cancel();
     try {
@@ -294,7 +369,6 @@ Like a good reporter: if his most recent answer contains a specific person, plac
       setIsRecording(true);
       setRecordingSeconds(0);
       timerRef.current = setInterval(() => setRecordingSeconds(s => s + 1), 1000);
-      startTranscription();
     } catch {
       alert("Microphone access needed. Please allow mic access and try again.");
     }
@@ -302,24 +376,26 @@ Like a good reporter: if his most recent answer contains a specific person, plac
 
   async function stopAndSave() {
     if (!mediaRecorderRef.current) return;
+    unlockAudio();
     const mr = mediaRecorderRef.current;
     clearInterval(timerRef.current);
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch {}
-    }
     const duration = recordingSeconds;
     mr.onstop = async () => {
-      const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      const mime = mr.mimeType || "audio/mp4";
+      const blob = new Blob(audioChunksRef.current, { type: mime });
       const reader = new FileReader();
       reader.onloadend = async () => {
         const entry = {
           id: Date.now(), question: currentQuestion, chapter: currentChapter,
           audioBase64: reader.result, duration,
-          transcript: transcriptRef.current || "",
+          transcript: "",
           photo: currentPhoto || null,
           date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
         };
-        if (isFreeTell && entry.transcript) {
+
+        entry.transcript = await transcribeBlob(blob, mime);
+
+        if (isFreeTellRef.current && entry.transcript) {
           try {
             const data = await callClaude({
               model: "claude-sonnet-4-6",
@@ -329,47 +405,11 @@ Like a good reporter: if his most recent answer contains a specific person, plac
             const ch = data.content?.[0]?.text?.trim();
             if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
           } catch {}
-          setIsFreeTell(false);
+          isFreeTellRef.current = false;
         }
-	if (!entry.transcript || entry.transcript.trim().length < 10) {
-          try {
-            const tRes = await fetch("/api/transcribe", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ audioBase64: entry.audioBase64 })
-            });
-            if (tRes.ok) {
-              const tData = await tRes.json();
-              if (tData.transcript) entry.transcript = tData.transcript;
-            }
-          } catch {}
-        }
-if (!entry.transcript || entry.transcript.trim().length < 10) {
-          try {
-            const tRes = await fetch("/api/transcribe", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ audioBase64: entry.audioBase64 })
-            });
-            if (tRes.ok) {
-              const tData = await tRes.json();
-              if (tData.transcript) entry.transcript = tData.transcript;
-            }
-          } catch {}
-        }
-        if (isFreeTell && entry.transcript) {
-          try {
-            const data = await callClaude({
-              model: "claude-sonnet-4-6",
-              max_tokens: 200,
-              messages: [{ role: "user", content: `Marty just told this story unprompted: "${entry.transcript.slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
-            });
-            const ch = data.content?.[0]?.text?.trim();
-            if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
-          } catch {}
-          setIsFreeTell(false);
-        }
-	const newEntries = [...entries, entry];
+
+        const newEntries = [...entries, entry];
+        entriesRef.current = newEntries;
         setEntries(newEntries);
         try {
           localStorage.setItem("marty_entries", JSON.stringify(newEntries));
@@ -383,7 +423,6 @@ if (!entry.transcript || entry.transcript.trim().length < 10) {
         } catch {}
         setIsSaved(true);
         setIsRecording(false);
-        setLiveTranscript("");
         mr.stream.getTracks().forEach(t => t.stop());
         setTimeout(() => {
           if (entry.transcript && entry.transcript.trim().length > 10) {
@@ -437,10 +476,7 @@ if (!entry.transcript || entry.transcript.trim().length < 10) {
         <div style={{ color: STYLES.ivory, fontSize: 34, fontWeight: "bold", marginBottom: 10 }}>Marty Kupersmith</div>
         <div style={{ color: STYLES.muted, fontSize: 14, marginBottom: 50 }}>A Life in Music & Stories</div>
         <button
-          onClick={() => {
-            setView("marty");
-            if (currentQuestion) speak(currentQuestion);
-          }}
+          onClick={beginSession}
           style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 16, padding: "22px 44px", fontSize: 22, cursor: "pointer", fontFamily: "'Georgia', serif", boxShadow: "0 4px 24px rgba(184,92,58,0.5)" }}
         >
           Tap to begin
@@ -478,37 +514,40 @@ if (!entry.transcript || entry.transcript.trim().length < 10) {
           {isLoading ? (
             <div style={{ color: STYLES.muted, fontSize: 15, textAlign: "center" }}>
               <div style={{ fontSize: 28, marginBottom: 12 }}>📖</div>
-              Thinking of a question for you...
+              Thinking...
             </div>
           ) : isSaved ? (
             <div style={{ color: STYLES.gold, fontSize: 16, textAlign: "center" }}>
               <div style={{ fontSize: 36, marginBottom: 12 }}>✓</div>
               Got it, Marty. Thank you.
-              <div style={{ color: STYLES.muted, fontSize: 13, marginTop: 8 }}>Getting your next question...</div>
+              <div style={{ color: STYLES.muted, fontSize: 13, marginTop: 8 }}>One moment...</div>
             </div>
           ) : (
             <div style={{ width: "100%" }}>
               <div style={{ color: STYLES.gold, fontSize: 10, letterSpacing: 3, textTransform: "uppercase", marginBottom: 14 }}>{currentChapter}</div>
               <div style={{ color: STYLES.ivory, fontSize: 19, lineHeight: 1.6 }}>{currentQuestion}</div>
-              <button onClick={() => speak(currentQuestion)} style={{ marginTop: 16, background: "transparent", border: `1px solid ${STYLES.border}`, color: STYLES.muted, borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer" }}>
-                🔊 Hear it again
-              </button>
+              {isListeningIntent && (
+                <div style={{ color: STYLES.rust, fontSize: 13, marginTop: 14, letterSpacing: 2 }}>🎧 Listening...</div>
+              )}
             </div>
           )}
         </div>
 
-        {!isLoading && !isSaved && (
+        {!isLoading && !isSaved && !isListeningIntent && (
           <div style={{ textAlign: "center", width: "100%", maxWidth: 480 }}>
             {!isRecording ? (
               <div>
                 <button onClick={startRecording} style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 32, cursor: "pointer", boxShadow: "0 4px 20px rgba(184,92,58,0.4)" }}>
                   🎙️
                 </button>
-                <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 14 }}>Tap the mic and start talking</div>
+                <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 14 }}>Tap the mic to answer</div>
 
-     <div style={{ marginTop: 30, display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
+                <div style={{ marginTop: 30, display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
                   <button onClick={startFreeTell} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
                     ✨ I have a story to tell
+                  </button>
+                  <button onClick={askMeQuestion} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
+                    ❓ Ask me a question
                   </button>
                   <button onClick={() => fileInputRef.current?.click()} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
                     📷 I want to talk about a picture
@@ -522,11 +561,6 @@ if (!entry.transcript || entry.transcript.trim().length < 10) {
                 <button onClick={stopAndSave} style={{ background: STYLES.gold, color: STYLES.bg, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 18, fontWeight: "bold", cursor: "pointer", boxShadow: "0 4px 20px rgba(201,168,76,0.4)" }}>
                   DONE
                 </button>
-                {liveTranscript && (
-                  <div style={{ marginTop: 20, color: STYLES.muted, fontSize: 13, fontStyle: "italic", lineHeight: 1.5, textAlign: "left", background: STYLES.card, borderRadius: 10, padding: 14, border: `1px solid ${STYLES.border}` }}>
-                    {liveTranscript.slice(-300)}
-                  </div>
-                )}
               </div>
             )}
           </div>
