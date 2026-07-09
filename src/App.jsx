@@ -182,7 +182,7 @@ export default function App() {
       const chunks = [];
       mr.ondataavailable = ev => chunks.push(ev.data);
       mr.start();
-      setTimeout(() => { try { mr.stop(); } catch {} }, 5000);
+      setTimeout(() => { try { mr.stop(); } catch {} }, 7000);
       mr.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         const mime = mr.mimeType || "audio/mp4";
@@ -198,17 +198,20 @@ export default function App() {
     }
   }
 
-  async function routeIntent(heard) {
+  async function routeIntent(heard, attempt = 1) {
     const lower = (heard || "").toLowerCase();
     let intent = "unclear";
-    if (lower.includes("i have a story") || lower.includes("tell you a story") || lower.includes("got a story")) intent = "story";
-    else if (lower.includes("ask me") || lower.includes("ask away") || lower.includes("you ask")) intent = "question";
-    else if (lower.trim().length > 3) {
+    if (lower.includes("story") || lower.includes("tell you") || lower.includes("happened")) intent = "story";
+    else if (lower.includes("ask") || lower.includes("question")) intent = "question";
+    if (intent !== "unclear" && lower.includes("story for me") && lower.includes("should i ask")) {
+      intent = "unclear";
+    }
+    if (intent === "unclear" && lower.trim().length > 2) {
       try {
         const data = await callClaude({
           model: "claude-sonnet-4-6",
           max_tokens: 50,
-          messages: [{ role: "user", content: `Marty was asked "Do you have a story for me, or should I ask you a question?" He replied: "${heard}". NOTE: if the reply just echoes the question itself (e.g. contains "story for me" or "should I ask you"), that's microphone echo, not Marty — reply UNCLEAR. Does he want to TELL a story, or be ASKED a question? Reply with exactly one word: STORY, QUESTION, or UNCLEAR.` }]
+          messages: [{ role: "user", content: `Marty was asked "Do you have a story for me, or should I ask you a question?" The microphone heard: "${heard}". NOTE: if it's just an echo of the question itself, reply UNCLEAR. Even from partial or garbled words, your best guess: does he want to TELL a story, or be ASKED a question? Reply with exactly one word: STORY, QUESTION, or UNCLEAR.` }]
         });
         const ans = data.content?.[0]?.text?.trim().toUpperCase() || "";
         if (ans.includes("STORY")) intent = "story";
@@ -220,6 +223,30 @@ export default function App() {
       startFreeTell();
     } else if (intent === "question") {
       fetchNextQuestion(entriesRef.current);
+    } else if (attempt === 1) {
+      setCurrentChapter("Hello");
+      await speakAndWait("Sorry Marty, I didn't catch that. Say story, or question.");
+      setTimeout(async () => {
+        setIsListeningIntent(true);
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const mr = new MediaRecorder(stream);
+          const chunks = [];
+          mr.ondataavailable = ev => chunks.push(ev.data);
+          mr.start();
+          setTimeout(() => { try { mr.stop(); } catch {} }, 7000);
+          mr.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop());
+            const mime = mr.mimeType || "audio/mp4";
+            const blob = new Blob(chunks, { type: mime });
+            const heard2 = await transcribeBlob(blob, mime);
+            setIsListeningIntent(false);
+            routeIntent(heard2, 2);
+          };
+        } catch {
+          setIsListeningIntent(false);
+        }
+      }, 500);
     } else {
       setCurrentChapter("Hello");
       speakAndWait("No rush, Marty. Tap a button below whenever you're ready.");
