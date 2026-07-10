@@ -99,11 +99,18 @@ export default function App() {
   // ── PERSISTENT MICROPHONE ──
   // Acquired once at "Tap to begin" and kept alive for the whole session.
   // This keeps iOS in play-and-record mode so recordings never come back empty.
-  async function getMicStream() {
-    if (micStreamRef.current && micStreamRef.current.active) {
-      return micStreamRef.current;
+async function getMicStream() {
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    let track = stream.getAudioTracks()[0];
+    if (track && track.muted) {
+      stream.getTracks().forEach(t => t.stop());
+      await new Promise(r => setTimeout(r, 400));
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
     micStreamRef.current = stream;
     return stream;
   }
@@ -197,7 +204,8 @@ export default function App() {
   async function beginSession() {
     unlockAudio();
     try {
-      await getMicStream();
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach(t => t.stop());
     } catch {
       alert("Marty's Story needs the microphone. Please allow mic access.");
     }
@@ -213,7 +221,9 @@ export default function App() {
       const mr = await makeRecorder();
       const chunks = [];
       mr.ondataavailable = ev => { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
-      mr.onstop = async () => {
+    mr.onstop = async () => {
+        mr.stream.getTracks().forEach(t => t.stop());
+        micStreamRef.current = null;
         const mime = mr.mimeType || "audio/mp4";
         const blob = new Blob(chunks, { type: mime });
         const heard = await transcribeBlob(blob, mime);
@@ -417,9 +427,17 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
     const mr = mediaRecorderRef.current;
     clearInterval(timerRef.current);
     const duration = recordingSeconds;
-    mr.onstop = async () => {
+   mr.onstop = async () => {
+      mr.stream.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
       const mime = mr.mimeType || "audio/mp4";
       const blob = new Blob(audioChunksRef.current, { type: mime });
+      if (blob.size === 0) {
+        setIsRecording(false);
+        setCurrentChapter("Hello");
+        speakAndWait("I'm sorry Marty, my ears glitched and I missed that. Let's try again.");
+        return;
+      }
       const reader = new FileReader();
       reader.onloadend = async () => {
         const entry = {
