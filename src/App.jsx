@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-
+import { upload } from "@vercel/blob/client";
 const CHAPTERS = ["Early Life","Music Career","The Band Years","Songwriting","Wild Stories","Warwick Life","Family"];
 
 const STYLES = {
@@ -196,25 +196,31 @@ export default function App() {
     return res.json();
   }
 
-  async function transcribeBlob(blob, mimeType) {
-    if (!blob || blob.size === 0) return "";
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        try {
-          const tRes = await fetch("/api/transcribe", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ audioBase64: reader.result, mimeType })
-          });
-          if (tRes.ok) {
-            const tData = await tRes.json();
-            resolve(tData.transcript || "");
-          } else resolve("");
-        } catch { resolve(""); }
-      };
-      reader.readAsDataURL(blob);
+ async function uploadAudio(blob) {
+    const result = await upload(`audio/${Date.now()}.wav`, blob, {
+      access: "public",
+      handleUploadUrl: "/api/upload",
     });
+    return result.url;
+  }
+
+  async function transcribeBlob(blob) {
+    if (!blob || blob.size === 0) return { transcript: "", audioUrl: null };
+    try {
+      const audioUrl = await uploadAudio(blob);
+      const tRes = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioUrl })
+      });
+      if (tRes.ok) {
+        const tData = await tRes.json();
+        return { transcript: tData.transcript || "", audioUrl };
+      }
+      return { transcript: "", audioUrl };
+    } catch {
+      return { transcript: "", audioUrl: null };
+    }
   }
 
   // ── WAV RECORDING through the shared audio engine ──
@@ -277,7 +283,7 @@ export default function App() {
       await startWavCapture();
       setTimeout(async () => {
         const blob = stopWavCapture();
-        const heard = await transcribeBlob(blob, "audio/wav");
+        const { transcript: heard } = await transcribeBlob(blob);
         setIsListeningIntent(false);
         routeIntent(heard, attempt);
       }, 7000);
@@ -486,7 +492,10 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
         date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
       };
 
-      entry.transcript = await transcribeBlob(blob, "audio/wav");
+      const tResult = await transcribeBlob(blob);
+      entry.transcript = tResult.transcript;
+      entry.audioUrl = tResult.audioUrl;
+      (entry.audioUrl || entry.audioBase64) = null;
 
       if (isFreeTellRef.current && entry.transcript) {
         try {
@@ -707,7 +716,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
                     "{entry.transcript}"
                   </div>
                 )}
-                {entry.audioBase64 && <audio controls src={entry.audioBase64} style={{ width: "100%", height: 36 }} />}
+                (entry.audioUrl || entry.audioBase64) style={{ width: "100%", height: 36 }} />}
               </div>
             ))}
           </div>
@@ -724,7 +733,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
                 {entries.filter(e => e.chapter === ch).map(entry => (
                   <div key={entry.id} style={{ borderTop: `1px solid ${STYLES.border}`, paddingTop: 10, marginTop: 10 }}>
                     <div style={{ color: STYLES.muted, fontSize: 13, marginBottom: 6 }}>{entry.question}</div>
-                    <audio controls src={entry.audioBase64} style={{ width: "100%", height: 32 }} />
+                    <audio controls src=(entry.audioUrl || entry.audioBase64) style={{ width: "100%", height: 32 }} />
                   </div>
                 ))}
               </div>
