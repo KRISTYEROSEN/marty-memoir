@@ -187,8 +187,9 @@ export default function App() {
         stream.getTracks().forEach(t => t.stop());
         const mime = mr.mimeType || "audio/mp4";
         const blob = new Blob(chunks, { type: mime });
-        const heard = await transcribeBlob(blob, mime);
+       const heard = await transcribeBlob(blob, mime);
         setIsListeningIntent(false);
+        alert("DEBUG - she heard: [" + heard + "]");
         routeIntent(heard);
       };
     } catch {
