@@ -63,7 +63,8 @@ export default function App() {
   const tapTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
   const dossierRef = useRef(null);
-  const audioPlayerRef = useRef(null);
+  const audioCtxRef = useRef(null);
+  const speakSourceRef = useRef(null);
   const isFreeTellRef = useRef(false);
   const entriesRef = useRef([]);
 
@@ -129,34 +130,43 @@ async function getMicStream() {
     return mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
   }
 
-  function unlockAudio() {
-    if (!audioPlayerRef.current) {
-      const a = new Audio();
-      a.src = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7v///////////////////////////////////////////wAAAABMYXZjNTguMTMAAAAAAAAAAAAAAAAkAkAAAAAAAAABhiJmyDkAAAAAAAAAAAAAAAAAAAAA//sQZAAP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAETEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVV";
-      a.play().catch(() => {});
-      audioPlayerRef.current = a;
+function unlockAudio() {
+    if (!audioCtxRef.current) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      audioCtxRef.current = new Ctx();
     }
+    if (audioCtxRef.current.state === "suspended") {
+      audioCtxRef.current.resume().catch(() => {});
+    }
+  }
+
+function stopSpeaking() {
+    try { if (speakSourceRef.current) speakSourceRef.current.stop(); } catch {}
+    speakSourceRef.current = null;
+    try { window.speechSynthesis.cancel(); } catch {}
   }
 
   function speakAndWait(text) {
     return new Promise(async (resolve) => {
       if (!text) return resolve();
       setCurrentQuestion(text);
-      const safety = setTimeout(resolve, 20000);
+      const safety = setTimeout(resolve, 25000);
       try {
+        unlockAudio();
         const res = await fetch("/api/speak", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text })
         });
         if (!res.ok) throw new Error("speech failed");
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const player = audioPlayerRef.current || new Audio();
-        audioPlayerRef.current = player;
-        player.onended = () => { clearTimeout(safety); resolve(); };
-        player.src = url;
-        await player.play();
+        const buf = await res.arrayBuffer();
+        const audioBuf = await audioCtxRef.current.decodeAudioData(buf);
+        const source = audioCtxRef.current.createBufferSource();
+        source.buffer = audioBuf;
+        source.connect(audioCtxRef.current.destination);
+        source.onended = () => { clearTimeout(safety); resolve(); };
+        speakSourceRef.current = source;
+        source.start(0);
       } catch {
         try {
           const u = new SpeechSynthesisUtterance(text);
@@ -170,7 +180,6 @@ async function getMicStream() {
       }
     });
   }
-
   async function callClaude(body) {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -405,6 +414,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
 
   async function startRecording() {
     unlockAudio();
+    stopSpeaking();
     if (audioPlayerRef.current) audioPlayerRef.current.pause();
     window.speechSynthesis.cancel();
     try {
