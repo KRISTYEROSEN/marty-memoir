@@ -40,6 +40,43 @@ Respond in JSON only, no markdown, no preamble:
 }`;
 }
 
+// ── WAV RECORDER ──
+// Captures raw audio samples through the Web Audio engine and packs a WAV file.
+// Bypasses the iPhone MediaRecorder entirely.
+function encodeWav(samplesArrays, sampleRate) {
+  let totalLen = 0;
+  for (const a of samplesArrays) totalLen += a.length;
+  const samples = new Float32Array(totalLen);
+  let offset = 0;
+  for (const a of samplesArrays) { samples.set(a, offset); offset += a.length; }
+
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeString = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+
+  let idx = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(idx, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    idx += 2;
+  }
+  return new Blob([view], { type: "audio/wav" });
+}
+
 export default function App() {
   const [view, setView] = useState("welcome");
   const [currentQuestion, setCurrentQuestion] = useState(null);
@@ -57,8 +94,9 @@ export default function App() {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   const micStreamRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const audioChunksRef = useRef([]);
+  const micSourceRef = useRef(null);
+  const micProcessorRef = useRef(null);
+  const wavChunksRef = useRef([]);
   const timerRef = useRef(null);
   const tapTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -97,40 +135,7 @@ export default function App() {
     setEntries(existing);
   }
 
-  // ── PERSISTENT MICROPHONE ──
-  // Acquired once at "Tap to begin" and kept alive for the whole session.
-  // This keeps iOS in play-and-record mode so recordings never come back empty.
-async function getMicStream() {
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach(t => t.stop());
-      micStreamRef.current = null;
-    }
-    let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    let track = stream.getAudioTracks()[0];
-    if (track && track.muted) {
-      stream.getTracks().forEach(t => t.stop());
-      await new Promise(r => setTimeout(r, 400));
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    }
-    micStreamRef.current = stream;
-    return stream;
-  }
-
-  function pickMimeType() {
-    const candidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
-    for (const c of candidates) {
-      try { if (MediaRecorder.isTypeSupported(c)) return c; } catch {}
-    }
-    return "";
-  }
-
-  async function makeRecorder() {
-    const stream = await getMicStream();
-    const mime = pickMimeType();
-    return mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-  }
-
-function unlockAudio() {
+  function unlockAudio() {
     if (!audioCtxRef.current) {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       audioCtxRef.current = new Ctx();
@@ -140,7 +145,7 @@ function unlockAudio() {
     }
   }
 
-function stopSpeaking() {
+  function stopSpeaking() {
     try { if (speakSourceRef.current) speakSourceRef.current.stop(); } catch {}
     speakSourceRef.current = null;
     try { window.speechSynthesis.cancel(); } catch {}
@@ -180,6 +185,7 @@ function stopSpeaking() {
       }
     });
   }
+
   async function callClaude(body) {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -210,6 +216,40 @@ function stopSpeaking() {
     });
   }
 
+  // ── WAV RECORDING through the shared audio engine ──
+  async function startWavCapture() {
+    unlockAudio();
+    stopSpeaking();
+    const ctx = audioCtxRef.current;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    });
+    micStreamRef.current = stream;
+    const source = ctx.createMediaStreamSource(stream);
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    wavChunksRef.current = [];
+    processor.onaudioprocess = (e) => {
+      wavChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    };
+    source.connect(processor);
+    processor.connect(ctx.destination);
+    micSourceRef.current = source;
+    micProcessorRef.current = processor;
+  }
+
+  function stopWavCapture() {
+    try { if (micProcessorRef.current) { micProcessorRef.current.disconnect(); micProcessorRef.current.onaudioprocess = null; } } catch {}
+    try { if (micSourceRef.current) micSourceRef.current.disconnect(); } catch {}
+    try { if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop()); } catch {}
+    micProcessorRef.current = null;
+    micSourceRef.current = null;
+    micStreamRef.current = null;
+    const sampleRate = audioCtxRef.current ? audioCtxRef.current.sampleRate : 44100;
+    const blob = encodeWav(wavChunksRef.current, sampleRate);
+    wavChunksRef.current = [];
+    return blob;
+  }
+
   async function beginSession() {
     unlockAudio();
     try {
@@ -227,20 +267,13 @@ function stopSpeaking() {
   async function listenShort(attempt) {
     setIsListeningIntent(true);
     try {
-      const mr = await makeRecorder();
-      const chunks = [];
-      mr.ondataavailable = ev => { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
-    mr.onstop = async () => {
-        mr.stream.getTracks().forEach(t => t.stop());
-        micStreamRef.current = null;
-        const mime = mr.mimeType || "audio/mp4";
-        const blob = new Blob(chunks, { type: mime });
-        const heard = await transcribeBlob(blob, mime);
+      await startWavCapture();
+      setTimeout(async () => {
+        const blob = stopWavCapture();
+        const heard = await transcribeBlob(blob, "audio/wav");
         setIsListeningIntent(false);
         routeIntent(heard, attempt);
-      };
-      mr.start();
-      setTimeout(() => { try { mr.stop(); } catch {} }, 7000);
+      }, 7000);
     } catch {
       setIsListeningIntent(false);
       setCurrentQuestion("Tap a button below whenever you're ready, Marty.");
@@ -413,16 +446,8 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
   }
 
   async function startRecording() {
-    unlockAudio();
-    stopSpeaking();
-    if (audioPlayerRef.current) audioPlayerRef.current.pause();
-    window.speechSynthesis.cancel();
     try {
-      const mr = await makeRecorder();
-      audioChunksRef.current = [];
-      mr.ondataavailable = ev => { if (ev.data && ev.data.size > 0) audioChunksRef.current.push(ev.data); };
-      mr.start();
-      mediaRecorderRef.current = mr;
+      await startWavCapture();
       setIsRecording(true);
       setRecordingSeconds(0);
       timerRef.current = setInterval(() => setRecordingSeconds(s => s + 1), 1000);
@@ -432,73 +457,67 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
   }
 
   async function stopAndSave() {
-    if (!mediaRecorderRef.current) return;
-    unlockAudio();
-    const mr = mediaRecorderRef.current;
+    if (!micProcessorRef.current) return;
     clearInterval(timerRef.current);
     const duration = recordingSeconds;
-   mr.onstop = async () => {
-      mr.stream.getTracks().forEach(t => t.stop());
-      micStreamRef.current = null;
-      const mime = mr.mimeType || "audio/mp4";
-      const blob = new Blob(audioChunksRef.current, { type: mime });
-      if (blob.size === 0) {
-        setIsRecording(false);
-        setCurrentChapter("Hello");
-        speakAndWait("I'm sorry Marty, my ears glitched and I missed that. Let's try again.");
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const entry = {
-          id: Date.now(), question: currentQuestion, chapter: currentChapter,
-          audioBase64: reader.result, duration,
-          transcript: "",
-          photo: currentPhoto || null,
-          date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
-        };
+    const blob = stopWavCapture();
 
-        entry.transcript = await transcribeBlob(blob, mime);
+    if (blob.size < 1000) {
+      setIsRecording(false);
+      setCurrentChapter("Hello");
+      speakAndWait("I'm sorry Marty, my ears glitched and I missed that. Let's try again.");
+      return;
+    }
 
-        if (isFreeTellRef.current && entry.transcript) {
-          try {
-            const data = await callClaude({
-              model: "claude-sonnet-4-6",
-              max_tokens: 200,
-              messages: [{ role: "user", content: `Marty just told this story unprompted: "${entry.transcript.slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
-            });
-            const ch = data.content?.[0]?.text?.trim();
-            if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
-          } catch {}
-          isFreeTellRef.current = false;
-        }
-
-        const newEntries = [...entries, entry];
-        entriesRef.current = newEntries;
-        setEntries(newEntries);
-        try {
-          localStorage.setItem("marty_entries", JSON.stringify(newEntries));
-        } catch {}
-        try {
-          await fetch("/api/save", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(entry)
-          });
-        } catch {}
-        setIsSaved(true);
-        setIsRecording(false);
-        setTimeout(() => {
-          if (entry.transcript && entry.transcript.trim().length > 10) {
-            fetchFollowUp(entry, newEntries);
-          } else {
-            fetchNextQuestion(newEntries);
-          }
-        }, 1500);
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const entry = {
+        id: Date.now(), question: currentQuestion, chapter: currentChapter,
+        audioBase64: reader.result, duration,
+        transcript: "",
+        photo: currentPhoto || null,
+        date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
       };
-      reader.readAsDataURL(blob);
+
+      entry.transcript = await transcribeBlob(blob, "audio/wav");
+
+      if (isFreeTellRef.current && entry.transcript) {
+        try {
+          const data = await callClaude({
+            model: "claude-sonnet-4-6",
+            max_tokens: 200,
+            messages: [{ role: "user", content: `Marty just told this story unprompted: "${entry.transcript.slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
+          });
+          const ch = data.content?.[0]?.text?.trim();
+          if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
+        } catch {}
+        isFreeTellRef.current = false;
+      }
+
+      const newEntries = [...entries, entry];
+      entriesRef.current = newEntries;
+      setEntries(newEntries);
+      try {
+        localStorage.setItem("marty_entries", JSON.stringify(newEntries));
+      } catch {}
+      try {
+        await fetch("/api/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(entry)
+        });
+      } catch {}
+      setIsSaved(true);
+      setIsRecording(false);
+      setTimeout(() => {
+        if (entry.transcript && entry.transcript.trim().length > 10) {
+          fetchFollowUp(entry, newEntries);
+        } else {
+          fetchNextQuestion(newEntries);
+        }
+      }, 1500);
     };
-    mr.stop();
+    reader.readAsDataURL(blob);
   }
 
   function handleHeaderTap() {
