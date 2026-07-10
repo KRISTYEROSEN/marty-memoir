@@ -182,7 +182,7 @@ export default function App() {
       const chunks = [];
       mr.ondataavailable = ev => chunks.push(ev.data);
       mr.start();
-      setTimeout(() => { try { mr.stop(); } catch {} }, 7000);
+     setTimeout(() => { try { mr.requestData(); setTimeout(() => mr.stop(), 100); } catch {} }, 7000);
       mr.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         const mime = mr.mimeType || "audio/mp4";
@@ -235,7 +235,7 @@ export default function App() {
           const chunks = [];
           mr.ondataavailable = ev => chunks.push(ev.data);
           mr.start();
-          setTimeout(() => { try { mr.stop(); } catch {} }, 7000);
+          setTimeout(() => { try { mr.requestData(); setTimeout(() => mr.stop(), 100); } catch {} }, 7000);
           mr.onstop = async () => {
             stream.getTracks().forEach(t => t.stop());
            const mime = mr.mimeType || "audio/mp4";
