@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { upload } from "@vercel/blob/client";
+
 const CHAPTERS = ["Early Life","Music Career","The Band Years","Songwriting","Wild Stories","Warwick Life","Family"];
 
 const STYLES = {
@@ -40,9 +41,6 @@ Respond in JSON only, no markdown, no preamble:
 }`;
 }
 
-// ── WAV RECORDER ──
-// Captures raw audio samples through the Web Audio engine and packs a WAV file.
-// Bypasses the iPhone MediaRecorder entirely.
 function encodeWav(samplesArrays, sampleRate) {
   let totalLen = 0;
   for (const a of samplesArrays) totalLen += a.length;
@@ -196,7 +194,7 @@ export default function App() {
     return res.json();
   }
 
- async function uploadAudio(blob) {
+  async function uploadAudio(blob) {
     const result = await upload(`audio/${Date.now()}.wav`, blob, {
       access: "public",
       handleUploadUrl: "/api/upload",
@@ -223,7 +221,6 @@ export default function App() {
     }
   }
 
-  // ── WAV RECORDING through the shared audio engine ──
   async function startWavCapture() {
     unlockAudio();
     stopSpeaking();
@@ -238,14 +235,14 @@ export default function App() {
     processor.onaudioprocess = (e) => {
       wavChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
     };
-   const silence = ctx.createGain();
+    const silence = ctx.createGain();
     silence.gain.value = 0;
     source.connect(processor);
     processor.connect(silence);
     silence.connect(ctx.destination);
-    micSilenceRef.current = silence;
     micSourceRef.current = source;
     micProcessorRef.current = processor;
+    micSilenceRef.current = silence;
   }
 
   function stopWavCapture() {
@@ -255,8 +252,8 @@ export default function App() {
     try { if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop()); } catch {}
     micProcessorRef.current = null;
     micSourceRef.current = null;
-    micStreamRef.current = null;
     micSilenceRef.current = null;
+    micStreamRef.current = null;
     const sampleRate = audioCtxRef.current ? audioCtxRef.current.sampleRate : 44100;
     const blob = encodeWav(wavChunksRef.current, sampleRate);
     wavChunksRef.current = [];
@@ -283,9 +280,9 @@ export default function App() {
       await startWavCapture();
       setTimeout(async () => {
         const blob = stopWavCapture();
-        const { transcript: heard } = await transcribeBlob(blob);
+        const result = await transcribeBlob(blob);
         setIsListeningIntent(false);
-        routeIntent(heard, attempt);
+        routeIntent(result.transcript, attempt);
       }, 7000);
     } catch {
       setIsListeningIntent(false);
@@ -482,57 +479,58 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
       return;
     }
 
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const entry = {
-        id: Date.now(), question: currentQuestion, chapter: currentChapter,
-        audioBase64: reader.result, duration,
-        transcript: "",
-        photo: currentPhoto || null,
-        date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
-      };
+    setIsRecording(false);
+    setIsLoading(true);
 
-      const tResult = await transcribeBlob(blob);
-      entry.transcript = tResult.transcript;
-      entry.audioUrl = tResult.audioUrl;
-      entry.audioBase64 = null;
+    const result = await transcribeBlob(blob);
 
-      if (isFreeTellRef.current && entry.transcript) {
-        try {
-          const data = await callClaude({
-            model: "claude-sonnet-4-6",
-            max_tokens: 200,
-            messages: [{ role: "user", content: `Marty just told this story unprompted: "${entry.transcript.slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
-          });
-          const ch = data.content?.[0]?.text?.trim();
-          if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
-        } catch {}
-        isFreeTellRef.current = false;
-      }
-
-      const newEntries = [...entries, entry];
-      entriesRef.current = newEntries;
-      setEntries(newEntries);
-      try {
-        localStorage.setItem("marty_entries", JSON.stringify(newEntries));
-      } catch {}
-      try {
-        await fetch("/api/save", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(entry)
-        });
-      } catch {}
-      setIsSaved(true);
-     setIsRecording(false);
-      if (entry.transcript && entry.transcript.trim().length > 10) {
-        setIsSaved(true);
-        setTimeout(() => fetchFollowUp(entry, newEntries), 1500);
-      } else {
-        speakAndWait("I'm sorry Marty, I didn't catch that. Tap the microphone and tell me one more time.");
-      }
+    const entry = {
+      id: Date.now(),
+      question: currentQuestion,
+      chapter: currentChapter,
+      audioUrl: result.audioUrl,
+      duration,
+      transcript: result.transcript,
+      photo: currentPhoto || null,
+      date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
     };
-    reader.readAsDataURL(blob);
+
+    if (isFreeTellRef.current && entry.transcript) {
+      try {
+        const data = await callClaude({
+          model: "claude-sonnet-4-6",
+          max_tokens: 200,
+          messages: [{ role: "user", content: `Marty just told this story unprompted: "${entry.transcript.slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
+        });
+        const ch = data.content?.[0]?.text?.trim();
+        if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
+      } catch {}
+      isFreeTellRef.current = false;
+    }
+
+    const newEntries = [...entries, entry];
+    entriesRef.current = newEntries;
+    setEntries(newEntries);
+    try {
+      const light = newEntries.map(e => ({ ...e, photo: null }));
+      localStorage.setItem("marty_entries", JSON.stringify(light));
+    } catch {}
+    try {
+      await fetch("/api/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(entry)
+      });
+    } catch {}
+
+    setIsLoading(false);
+
+    if (entry.transcript && entry.transcript.trim().length > 10) {
+      setIsSaved(true);
+      setTimeout(() => fetchFollowUp(entry, newEntries), 1500);
+    } else {
+      speakAndWait("I'm sorry Marty, I didn't catch that. Tap the microphone and tell me one more time.");
+    }
   }
 
   function handleHeaderTap() {
@@ -733,7 +731,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
                 {entries.filter(e => e.chapter === ch).map(entry => (
                   <div key={entry.id} style={{ borderTop: `1px solid ${STYLES.border}`, paddingTop: 10, marginTop: 10 }}>
                     <div style={{ color: STYLES.muted, fontSize: 13, marginBottom: 6 }}>{entry.question}</div>
-                    <audio controls src=(entry.audioUrl || entry.audioBase64) style={{ width: "100%", height: 32 }} />
+                    {(entry.audioUrl || entry.audioBase64) && <audio controls src={entry.audioUrl || entry.audioBase64} style={{ width: "100%", height: 32 }} />}
                   </div>
                 ))}
               </div>
