@@ -495,7 +495,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
       const tResult = await transcribeBlob(blob);
       entry.transcript = tResult.transcript;
       entry.audioUrl = tResult.audioUrl;
-      (entry.audioUrl || entry.audioBase64) = null;
+      entry.audioBase64 = null;
 
       if (isFreeTellRef.current && entry.transcript) {
         try {
