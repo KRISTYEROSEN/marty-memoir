@@ -421,8 +421,8 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
           date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
         };
 
-        entry.transcript = await transcribeBlob(blob, mime);
-
+      entry.transcript = await transcribeBlob(blob, mime);
+        alert("DEBUG - recording transcript: [" + entry.transcript + "]");
         if (isFreeTellRef.current && entry.transcript) {
           try {
             const data = await callClaude({
