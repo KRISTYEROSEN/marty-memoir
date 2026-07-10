@@ -56,6 +56,7 @@ export default function App() {
   const [isResearching, setIsResearching] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
+  const micStreamRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
@@ -93,6 +94,32 @@ export default function App() {
     if (!Array.isArray(existing)) existing = [];
     entriesRef.current = existing;
     setEntries(existing);
+  }
+
+  // ── PERSISTENT MICROPHONE ──
+  // Acquired once at "Tap to begin" and kept alive for the whole session.
+  // This keeps iOS in play-and-record mode so recordings never come back empty.
+  async function getMicStream() {
+    if (micStreamRef.current && micStreamRef.current.active) {
+      return micStreamRef.current;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micStreamRef.current = stream;
+    return stream;
+  }
+
+  function pickMimeType() {
+    const candidates = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
+    for (const c of candidates) {
+      try { if (MediaRecorder.isTypeSupported(c)) return c; } catch {}
+    }
+    return "";
+  }
+
+  async function makeRecorder() {
+    const stream = await getMicStream();
+    const mime = pickMimeType();
+    return mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
   }
 
   function unlockAudio() {
@@ -147,6 +174,7 @@ export default function App() {
   }
 
   async function transcribeBlob(blob, mimeType) {
+    if (!blob || blob.size === 0) return "";
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onloadend = async () => {
@@ -168,30 +196,32 @@ export default function App() {
 
   async function beginSession() {
     unlockAudio();
+    try {
+      await getMicStream();
+    } catch {
+      alert("Marty's Story needs the microphone. Please allow mic access.");
+    }
     setView("marty");
     setCurrentChapter("Hello");
     await speakAndWait("Hi Marty! Do you have a story for me today, or should I ask you a question?");
-    setTimeout(listenForIntent, 700);
+    setTimeout(() => listenShort(1), 400);
   }
 
-  async function listenForIntent() {
+  async function listenShort(attempt) {
     setIsListeningIntent(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream);
+      const mr = await makeRecorder();
       const chunks = [];
-      mr.ondataavailable = ev => chunks.push(ev.data);
-      mr.start();
-     setTimeout(() => { try { mr.requestData(); setTimeout(() => mr.stop(), 100); } catch {} }, 7000);
+      mr.ondataavailable = ev => { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
       mr.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop());
         const mime = mr.mimeType || "audio/mp4";
         const blob = new Blob(chunks, { type: mime });
-       const heard = await transcribeBlob(blob, mime);
+        const heard = await transcribeBlob(blob, mime);
         setIsListeningIntent(false);
-        alert("DEBUG - she heard: [" + heard + "]");
-        routeIntent(heard);
+        routeIntent(heard, attempt);
       };
+      mr.start();
+      setTimeout(() => { try { mr.stop(); } catch {} }, 7000);
     } catch {
       setIsListeningIntent(false);
       setCurrentQuestion("Tap a button below whenever you're ready, Marty.");
@@ -202,10 +232,10 @@ export default function App() {
   async function routeIntent(heard, attempt = 1) {
     const lower = (heard || "").toLowerCase();
     let intent = "unclear";
-    if (lower.includes("story") || lower.includes("tell you") || lower.includes("happened")) intent = "story";
-    else if (lower.includes("ask") || lower.includes("question")) intent = "question";
-    if (intent !== "unclear" && lower.includes("story for me") && lower.includes("should i ask")) {
-      intent = "unclear";
+    const isEcho = lower.includes("story for me") && lower.includes("should i ask");
+    if (!isEcho) {
+      if (lower.includes("story") || lower.includes("tell you") || lower.includes("happened")) intent = "story";
+      else if (lower.includes("ask") || lower.includes("question")) intent = "question";
     }
     if (intent === "unclear" && lower.trim().length > 2) {
       try {
@@ -227,28 +257,7 @@ export default function App() {
     } else if (attempt === 1) {
       setCurrentChapter("Hello");
       await speakAndWait("Sorry Marty, I didn't catch that. Say story, or question.");
-      setTimeout(async () => {
-        setIsListeningIntent(true);
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          const mr = new MediaRecorder(stream);
-          const chunks = [];
-          mr.ondataavailable = ev => chunks.push(ev.data);
-          mr.start();
-          setTimeout(() => { try { mr.requestData(); setTimeout(() => mr.stop(), 100); } catch {} }, 7000);
-          mr.onstop = async () => {
-            stream.getTracks().forEach(t => t.stop());
-           const mime = mr.mimeType || "audio/mp4";
-      const blob = new Blob(audioChunksRef.current, { type: mime });
-      alert("DEBUG - mime: [" + mr.mimeType + "] blob size: " + blob.size + " bytes, chunks: " + audioChunksRef.current.length);
-            const heard2 = await transcribeBlob(blob, mime);
-            setIsListeningIntent(false);
-            routeIntent(heard2, 2);
-          };
-        } catch {
-          setIsListeningIntent(false);
-        }
-      }, 500);
+      setTimeout(() => listenShort(2), 400);
     } else {
       setCurrentChapter("Hello");
       speakAndWait("No rush, Marty. Tap a button below whenever you're ready.");
@@ -389,10 +398,9 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
     if (audioPlayerRef.current) audioPlayerRef.current.pause();
     window.speechSynthesis.cancel();
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream);
+      const mr = await makeRecorder();
       audioChunksRef.current = [];
-      mr.ondataavailable = ev => audioChunksRef.current.push(ev.data);
+      mr.ondataavailable = ev => { if (ev.data && ev.data.size > 0) audioChunksRef.current.push(ev.data); };
       mr.start();
       mediaRecorderRef.current = mr;
       setIsRecording(true);
@@ -422,8 +430,8 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
           date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
         };
 
-      entry.transcript = await transcribeBlob(blob, mime);
-        alert("DEBUG - recording transcript: [" + entry.transcript + "]");
+        entry.transcript = await transcribeBlob(blob, mime);
+
         if (isFreeTellRef.current && entry.transcript) {
           try {
             const data = await callClaude({
@@ -452,7 +460,6 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
         } catch {}
         setIsSaved(true);
         setIsRecording(false);
-        mr.stream.getTracks().forEach(t => t.stop());
         setTimeout(() => {
           if (entry.transcript && entry.transcript.trim().length > 10) {
             fetchFollowUp(entry, newEntries);
