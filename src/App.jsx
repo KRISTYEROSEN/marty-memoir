@@ -716,7 +716,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
                     "{entry.transcript}"
                   </div>
                 )}
-                (entry.audioUrl || entry.audioBase64) style={{ width: "100%", height: 36 }} />}
+                {(entry.audioUrl || entry.audioBase64) && <audio controls src={entry.audioUrl || entry.audioBase64} style={{ width: "100%", height: 36 }} />}
               </div>
             ))}
           </div>
