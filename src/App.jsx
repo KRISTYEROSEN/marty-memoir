@@ -96,6 +96,7 @@ export default function App() {
   const micStreamRef = useRef(null);
   const micSourceRef = useRef(null);
   const micProcessorRef = useRef(null);
+  const micSilenceRef = useRef(null);
   const wavChunksRef = useRef([]);
   const timerRef = useRef(null);
   const tapTimeoutRef = useRef(null);
@@ -231,8 +232,12 @@ export default function App() {
     processor.onaudioprocess = (e) => {
       wavChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
     };
+   const silence = ctx.createGain();
+    silence.gain.value = 0;
     source.connect(processor);
-    processor.connect(ctx.destination);
+    processor.connect(silence);
+    silence.connect(ctx.destination);
+    micSilenceRef.current = silence;
     micSourceRef.current = source;
     micProcessorRef.current = processor;
   }
@@ -240,10 +245,12 @@ export default function App() {
   function stopWavCapture() {
     try { if (micProcessorRef.current) { micProcessorRef.current.disconnect(); micProcessorRef.current.onaudioprocess = null; } } catch {}
     try { if (micSourceRef.current) micSourceRef.current.disconnect(); } catch {}
+    try { if (micSilenceRef.current) micSilenceRef.current.disconnect(); } catch {}
     try { if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop()); } catch {}
     micProcessorRef.current = null;
     micSourceRef.current = null;
     micStreamRef.current = null;
+    micSilenceRef.current = null;
     const sampleRate = audioCtxRef.current ? audioCtxRef.current.sampleRate : 44100;
     const blob = encodeWav(wavChunksRef.current, sampleRate);
     wavChunksRef.current = [];
@@ -508,14 +515,13 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
         });
       } catch {}
       setIsSaved(true);
-      setIsRecording(false);
-      setTimeout(() => {
-        if (entry.transcript && entry.transcript.trim().length > 10) {
-          fetchFollowUp(entry, newEntries);
-        } else {
-          fetchNextQuestion(newEntries);
-        }
-      }, 1500);
+     setIsRecording(false);
+      if (entry.transcript && entry.transcript.trim().length > 10) {
+        setIsSaved(true);
+        setTimeout(() => fetchFollowUp(entry, newEntries), 1500);
+      } else {
+        speakAndWait("I'm sorry Marty, I didn't catch that. Tap the microphone and tell me one more time.");
+      }
     };
     reader.readAsDataURL(blob);
   }
