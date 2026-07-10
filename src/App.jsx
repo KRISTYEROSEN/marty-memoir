@@ -238,8 +238,9 @@ export default function App() {
           setTimeout(() => { try { mr.stop(); } catch {} }, 7000);
           mr.onstop = async () => {
             stream.getTracks().forEach(t => t.stop());
-            const mime = mr.mimeType || "audio/mp4";
-            const blob = new Blob(chunks, { type: mime });
+           const mime = mr.mimeType || "audio/mp4";
+      const blob = new Blob(audioChunksRef.current, { type: mime });
+      alert("DEBUG - mime: [" + mr.mimeType + "] blob size: " + blob.size + " bytes, chunks: " + audioChunksRef.current.length);
             const heard2 = await transcribeBlob(blob, mime);
             setIsListeningIntent(false);
             routeIntent(heard2, 2);
