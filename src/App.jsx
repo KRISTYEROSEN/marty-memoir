@@ -9,11 +9,9 @@ const STYLES = {
 };
 
 const PHRASES = {
-  GREETING: "Hi Marty! Do you have a story for me today, or should I ask you a question?",
-  GO_AHEAD: "Go ahead, Marty. I'm listening.",
-  ACK: "Got it, Marty. Hang on one second while I write this down.",
-  RETRY: "Sorry Marty, I didn't catch that. Say story, or question.",
-  NO_RUSH: "No rush, Marty. Tap a button below whenever you're ready.",
+  GREETING: "Hi Marty! Do you have a story for me, or should I interview you? Tap a button below.",
+  GO_AHEAD: "Go ahead, Marty. I'm listening. Tap the button when you're done.",
+  ACK: "Hang on Marty, let me write that all down. I have a follow-up question for you. One sec.",
   MISSED: "I'm sorry Marty, I didn't catch that. Tap the microphone and tell me one more time.",
   GLITCH: "I'm sorry Marty, my ears glitched and I missed that. Let's try again.",
 };
@@ -322,70 +320,7 @@ export default function App() {
     setView("marty");
     setCurrentChapter("Hello");
     prefetchPhrases();
-    await speakAndWait(PHRASES.GREETING);
-    setTimeout(() => listenShort(1), 400);
-  }
-
-  async function listenShort(attempt) {
-    setIsListeningIntent(true);
-    try {
-      await startWavCapture();
-      const startedAt = Date.now();
-      const finish = async () => {
-        const blob = stopWavCapture();
-        const result = await transcribeBlob(blob);
-        setIsListeningIntent(false);
-        routeIntent(result.transcript, attempt);
-      };
-      const poll = setInterval(() => {
-        const elapsed = Date.now() - startedAt;
-        const v = vadRef.current;
-        const doneTalking = v.heardSpeech && v.silentChunks > 14;
-        if ((elapsed > 1500 && doneTalking) || elapsed > 8000) {
-          clearInterval(poll);
-          finish();
-        }
-      }, 100);
-    } catch {
-      setIsListeningIntent(false);
-      setCurrentQuestion("Tap a button below whenever you're ready, Marty.");
-      setCurrentChapter("Hello");
-    }
-  }
-
-  async function routeIntent(heard, attempt = 1) {
-    const lower = (heard || "").toLowerCase();
-    let intent = "unclear";
-    const isEcho = lower.includes("story for me") && lower.includes("should i ask");
-    if (!isEcho) {
-      if (lower.includes("story") || lower.includes("tell you") || lower.includes("happened")) intent = "story";
-      else if (lower.includes("ask") || lower.includes("question")) intent = "question";
-    }
-    if (intent === "unclear" && lower.trim().length > 2) {
-      try {
-        const data = await callClaude({
-          model: "claude-sonnet-4-6",
-          max_tokens: 50,
-          messages: [{ role: "user", content: `Marty was asked "Do you have a story for me, or should I ask you a question?" The microphone heard: "${heard}". NOTE: if it's just an echo of the question itself, reply UNCLEAR. Even from partial or garbled words, your best guess: does he want to TELL a story, or be ASKED a question? Reply with exactly one word: STORY, QUESTION, or UNCLEAR.` }]
-        });
-        const ans = data.content?.[0]?.text?.trim().toUpperCase() || "";
-        if (ans.includes("STORY")) intent = "story";
-        else if (ans.includes("QUESTION")) intent = "question";
-      } catch {}
-    }
-
-    if (intent === "story") {
-      startFreeTell();
-    } else if (intent === "question") {
-      fetchNextQuestion(entriesRef.current);
-    } else if (attempt === 1) {
-      setCurrentChapter("Hello");
-      await speakAndWait(PHRASES.RETRY);
-      setTimeout(() => listenShort(2), 400);
-    } else {
-      setCurrentChapter("Hello");
-      speakAndWait(PHRASES.NO_RUSH);
-    }
+    speakAndWait(PHRASES.GREETING);
   }
 
   async function startFreeTell() {
@@ -694,28 +629,25 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
             <div style={{ width: "100%" }}>
               <div style={{ color: STYLES.gold, fontSize: 10, letterSpacing: 3, textTransform: "uppercase", marginBottom: 14 }}>{currentChapter}</div>
               <div style={{ color: STYLES.ivory, fontSize: 19, lineHeight: 1.6 }}>{currentQuestion}</div>
-              {isListeningIntent && (
-                <div style={{ color: STYLES.rust, fontSize: 13, marginTop: 14, letterSpacing: 2 }}>🎧 Listening...</div>
-              )}
             </div>
           )}
         </div>
 
-        {!isLoading && !isSaved && !isListeningIntent && (
+        {!isLoading && !isSaved && (
           <div style={{ textAlign: "center", width: "100%", maxWidth: 480 }}>
             {!isRecording ? (
               <div>
                 <button onClick={startRecording} style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 32, cursor: "pointer", boxShadow: "0 4px 20px rgba(184,92,58,0.4)" }}>
                   🎙️
                 </button>
-                <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 14 }}>Tap the mic to answer</div>
+                <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 14 }}>Tap the mic to answer, or pick below</div>
 
                 <div style={{ marginTop: 30, display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
-                  <button onClick={startFreeTell} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
-                    ✨ I have a story to tell
+                  <button onClick={startFreeTell} style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 14, padding: "18px 30px", fontSize: 18, cursor: "pointer", fontFamily: "'Georgia', serif", width: "100%", maxWidth: 320 }}>
+                    ✨ Story Mode
                   </button>
-                  <button onClick={askMeQuestion} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
-                    ❓ Ask me a question
+                  <button onClick={askMeQuestion} style={{ background: STYLES.card, color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 14, padding: "18px 30px", fontSize: 18, cursor: "pointer", fontFamily: "'Georgia', serif", width: "100%", maxWidth: 320 }}>
+                    🎤 Interview Mode
                   </button>
                   <button onClick={() => fileInputRef.current?.click()} style={{ background: "transparent", color: STYLES.gold, border: `1px solid ${STYLES.gold}`, borderRadius: 12, padding: "12px 22px", fontSize: 15, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
                     📷 I want to talk about a picture
