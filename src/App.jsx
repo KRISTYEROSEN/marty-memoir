@@ -1,7 +1,19 @@
 import { useState, useRef, useEffect } from "react";
 import { upload } from "@vercel/blob/client";
 
-const CHAPTERS = ["Early Life","Music Career","The Band Years","Songwriting","Wild Stories","Warwick Life","Family"];
+const SEED_CHAPTERS = ["Early Life","Music Career","The Band Years","Songwriting","Wild Stories","Warwick Life","Family"];
+const TRANSIENT = ["Hello", "Goodbye", "Your Story"];
+
+function orderedChapters(entries) {
+  const found = [];
+  for (const e of entries) {
+    if (e.chapter && !found.includes(e.chapter)) found.push(e.chapter);
+  }
+  const seeded = SEED_CHAPTERS.filter(c => found.includes(c));
+  const discovered = found.filter(c => !SEED_CHAPTERS.includes(c) && !TRANSIENT.includes(c));
+  const transient = found.filter(c => TRANSIENT.includes(c));
+  return [...seeded, ...discovered, ...transient];
+}
 
 const STYLES = {
   bg: "#0F1B2D", card: "#1A2B42", gold: "#C9A84C",
@@ -40,8 +52,7 @@ ${dossier}
 
 ` : `No research dossier is loaded yet. Ask warm general questions about his life.`}
 
-CHAPTERS TO BUILD TOWARD:
-1. Early Life  2. Music Career  3. The Band Years  4. Songwriting  5. Wild Stories  6. Warwick Life  7. Family
+AREAS OF HIS LIFE TO EXPLORE (starting points, not limits): Early Life, Music Career, The Band Years, Songwriting, Wild Stories, Warwick Life, Family. Chapters emerge from what Marty actually tells — if a theme grows big enough, it becomes its own chapter.
 
 RULES:
 - Ask ONE question at a time, never two
@@ -113,6 +124,9 @@ export default function App() {
   const [adminTab, setAdminTab] = useState("answers");
   const [headerTaps, setHeaderTaps] = useState(0);
   const [isResearching, setIsResearching] = useState(false);
+  const [book, setBook] = useState(null);
+  const [isWritingBook, setIsWritingBook] = useState(false);
+  const [bookStatus, setBookStatus] = useState("");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   const micStreamRef = useRef(null);
@@ -159,6 +173,14 @@ export default function App() {
     if (!Array.isArray(existing)) existing = [];
     entriesRef.current = existing;
     setEntries(existing);
+
+    try {
+      const res = await fetch("/api/book");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.book) setBook(data.book);
+      }
+    } catch {}
   }
 
   function unlockAudio() {
@@ -502,13 +524,20 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
   }
 
   function classifyChapterInBackground(entry) {
+    const existing = orderedChapters(entriesRef.current).filter(c => !TRANSIENT.includes(c));
+    const options = [...new Set([...SEED_CHAPTERS, ...existing])];
     callClaude({
       model: "claude-sonnet-4-6",
       max_tokens: 200,
-      messages: [{ role: "user", content: `Marty just told this story unprompted: "${(entry.transcript || "").slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
+      messages: [{ role: "user", content: `Marty just told this story unprompted: "${(entry.transcript || "").slice(0, 800)}". 
+
+Existing chapters of his memoir: ${options.join(", ")}.
+
+Which chapter does this story belong to? Pick the best existing fit — OR, if this story genuinely opens a new theme of his life that deserves its own chapter, coin a NEW chapter name (2 to 4 words, title case). Reply with ONLY the chapter name, nothing else.` }]
     }).then((data) => {
-      const ch = data.content?.[0]?.text?.trim();
-      if (ch && CHAPTERS.includes(ch) && ch !== entry.chapter) {
+      let ch = data.content?.[0]?.text?.trim().replace(/^["']|["']$/g, "");
+      if (ch && ch.length > 40) ch = null;
+      if (ch && ch !== entry.chapter) {
         const updated = { ...entry, chapter: ch };
         entriesRef.current = entriesRef.current.map(e => e.id === entry.id ? updated : e);
         setEntries(prev => prev.map(e => e.id === entry.id ? updated : e));
@@ -627,6 +656,48 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
     else { tapTimeoutRef.current = setTimeout(() => setHeaderTaps(0), 2000); }
   }
 
+  async function writeBook() {
+    setIsWritingBook(true);
+    const chaptersOut = {};
+    try {
+      for (const ch of orderedChapters(entriesRef.current)) {
+        const chEntries = entriesRef.current
+          .filter(e => e.chapter === ch && e.transcript && e.transcript.trim().length > 15)
+          .sort((a, b) => a.id - b.id);
+        if (chEntries.length === 0) continue;
+        setBookStatus(`Writing "${ch}"...`);
+        const material = chEntries.map((e, i) => `[Story ${i + 1}, told ${e.date}]\nInterviewer asked: ${e.question}\nMarty said: ${e.transcript}`).join("\n\n");
+        const data = await callClaude({
+          model: "claude-sonnet-4-6",
+          max_tokens: 3000,
+          messages: [{ role: "user", content: `You are ghostwriting Marty Kupersmith's memoir. Below are his actual spoken words from recording sessions for the chapter "${ch}", in the order he told them.
+
+${material}
+
+Write this chapter as memoir prose in Marty's first-person voice:
+- Use ONLY facts and details he actually said — never invent names, dates, or events
+- Keep his personality, humor, and turns of phrase where they shine
+- Weave the stories in the order given so it flows
+- Where material is thin, keep it short — a paragraph is fine; do not pad
+- No headings, no notes, just the prose` }]
+        });
+        const prose = data.content?.filter(b => b.type === "text").map(b => b.text).join("\n") || "";
+        if (prose.trim()) chaptersOut[ch] = prose.trim();
+      }
+      const draft = { chapters: chaptersOut, updated: Date.now() };
+      setBook(draft);
+      await fetch("/api/book", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft)
+      });
+      setBookStatus("");
+    } catch (e) {
+      setBookStatus("Something went wrong: " + e.message);
+    }
+    setIsWritingBook(false);
+  }
+
   async function runResearch() {
     setIsResearching(true);
     try {
@@ -644,12 +715,10 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
     setIsResearching(false);
   }
 
-  const chapterCounts = CHAPTERS.reduce((acc, ch) => {
+  const chapterCounts = orderedChapters(entries).reduce((acc, ch) => {
     acc[ch] = entries.filter(e => e.chapter === ch).length;
     return acc;
   }, {});
-
-  const progress = Math.min(100, Math.round((entries.length / 35) * 100));
 
   if (view === "welcome") {
     return (
@@ -676,14 +745,8 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
           <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 6 }}>A Life in Music & Stories</div>
         </div>
 
-        <div style={{ width: "100%", maxWidth: 480, marginBottom: 28 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-            <span style={{ color: STYLES.muted, fontSize: 11 }}>Book progress</span>
-            <span style={{ color: STYLES.gold, fontSize: 11 }}>{entries.length} stories told</span>
-          </div>
-          <div style={{ background: STYLES.border, borderRadius: 4, height: 6 }}>
-            <div style={{ background: STYLES.gold, height: 6, borderRadius: 4, width: `${progress}%`, transition: "width 0.5s ease" }} />
-          </div>
+        <div style={{ width: "100%", maxWidth: 480, marginBottom: 28, textAlign: "center" }}>
+          <span style={{ color: STYLES.gold, fontSize: 12 }}>{entries.length} stories told · {Object.values(chapterCounts).filter(v => v > 0).length} chapters growing</span>
         </div>
 
         {currentPhoto && !isSaved && (
@@ -762,7 +825,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 24 }}>
-          {[{ label: "Stories", value: entries.length }, { label: "Chapters Active", value: Object.values(chapterCounts).filter(v => v > 0).length }, { label: "Progress", value: `${progress}%` }].map(s => (
+          {[{ label: "Stories", value: entries.length }, { label: "Chapters", value: Object.values(chapterCounts).filter(v => v > 0).length }, { label: "With Transcripts", value: entries.filter(e => e.transcript && e.transcript.trim().length > 15).length }].map(s => (
             <div key={s.label} style={{ background: STYLES.card, borderRadius: 10, padding: 14, border: `1px solid ${STYLES.border}`, textAlign: "center" }}>
               <div style={{ color: STYLES.gold, fontSize: 22, fontWeight: "bold" }}>{s.value}</div>
               <div style={{ color: STYLES.muted, fontSize: 11 }}>{s.label}</div>
@@ -771,7 +834,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-          {["answers", "chapters", "research"].map(tab => (
+          {["answers", "chapters", "book", "research"].map(tab => (
             <button key={tab} onClick={() => setAdminTab(tab)} style={{ background: adminTab === tab ? STYLES.gold : STYLES.card, color: adminTab === tab ? STYLES.bg : STYLES.muted, border: "none", borderRadius: 8, padding: "8px 18px", cursor: "pointer", fontSize: 13, fontWeight: adminTab === tab ? "bold" : "normal", textTransform: "capitalize" }}>
               {tab}
             </button>
@@ -805,20 +868,58 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
 
         {adminTab === "chapters" && (
           <div>
-            {CHAPTERS.map(ch => (
+            {orderedChapters(entries).map(ch => (
               <div key={ch} style={{ background: STYLES.card, borderRadius: 12, padding: 18, marginBottom: 12, border: `1px solid ${STYLES.border}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: chapterCounts[ch] > 0 ? 12 : 0 }}>
                   <span style={{ color: STYLES.ivory, fontSize: 15, fontWeight: "bold" }}>{ch}</span>
                   <span style={{ color: chapterCounts[ch] > 0 ? STYLES.gold : STYLES.muted, fontSize: 13 }}>{chapterCounts[ch] > 0 ? `${chapterCounts[ch]} stories` : "Not started"}</span>
                 </div>
-                {entries.filter(e => e.chapter === ch).map(entry => (
+                {entries.filter(e => e.chapter === ch).sort((a, b) => a.id - b.id).map(entry => (
                   <div key={entry.id} style={{ borderTop: `1px solid ${STYLES.border}`, paddingTop: 10, marginTop: 10 }}>
-                    <div style={{ color: STYLES.muted, fontSize: 13, marginBottom: 6 }}>{entry.question}</div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <div style={{ color: STYLES.muted, fontSize: 13, marginBottom: 6 }}>{entry.question}</div>
+                      <div style={{ color: STYLES.muted, fontSize: 11, whiteSpace: "nowrap", marginLeft: 10 }}>{entry.date}</div>
+                    </div>
+                    {entry.transcript && (
+                      <div style={{ color: STYLES.ivory, fontSize: 14, fontStyle: "italic", lineHeight: 1.6, margin: "6px 0 10px", borderLeft: `3px solid ${STYLES.gold}`, paddingLeft: 12 }}>
+                        "{entry.transcript}"
+                      </div>
+                    )}
                     {(entry.audioUrl || entry.audioBase64) && <audio controls src={entry.audioUrl || entry.audioBase64} style={{ width: "100%", height: 32 }} />}
                   </div>
                 ))}
               </div>
             ))}
+          </div>
+        )}
+
+        {adminTab === "book" && (
+          <div>
+            <div style={{ color: STYLES.muted, fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>
+              Weave everything Marty has told so far into memoir prose, chapter by chapter, in his own voice. Run it anytime — it rewrites richer as his stories grow.
+            </div>
+            <button onClick={writeBook} disabled={isWritingBook} style={{ background: isWritingBook ? STYLES.border : STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 15, cursor: isWritingBook ? "default" : "pointer", marginBottom: 8 }}>
+              {isWritingBook ? "Writing..." : "📖 Write the book so far"}
+            </button>
+            {bookStatus && <div style={{ color: STYLES.gold, fontSize: 13, marginBottom: 16 }}>{bookStatus}</div>}
+            {book && book.chapters && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ color: STYLES.muted, fontSize: 12, marginBottom: 16 }}>
+                  Draft updated {new Date(book.updated).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                </div>
+                {Object.keys(book.chapters).map(ch => (
+                  <div key={ch} style={{ background: STYLES.card, borderRadius: 12, padding: 24, marginBottom: 16, border: `1px solid ${STYLES.border}` }}>
+                    <div style={{ color: STYLES.gold, fontSize: 12, letterSpacing: 3, textTransform: "uppercase", marginBottom: 14 }}>{ch}</div>
+                    <div style={{ color: STYLES.ivory, fontSize: 15, lineHeight: 1.9, whiteSpace: "pre-wrap", fontFamily: "'Georgia', serif" }}>
+                      {book.chapters[ch]}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!book && !isWritingBook && (
+              <div style={{ color: STYLES.muted, fontSize: 14, marginTop: 20 }}>No draft yet — tap the button to write the first one.</div>
+            )}
           </div>
         )}
 
