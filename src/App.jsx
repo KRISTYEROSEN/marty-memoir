@@ -722,13 +722,13 @@ Write this chapter as memoir prose in Marty's first-person voice:
 
   if (view === "welcome") {
     return (
-      <div style={{ minHeight: "100vh", background: STYLES.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Georgia', serif", textAlign: "center" }}>
-        <div style={{ color: STYLES.gold, fontSize: 12, letterSpacing: 4, textTransform: "uppercase", marginBottom: 12 }}>The Story of</div>
-        <div style={{ color: STYLES.ivory, fontSize: 34, fontWeight: "bold", marginBottom: 10 }}>Marty Kupersmith</div>
-        <div style={{ color: STYLES.muted, fontSize: 14, marginBottom: 50 }}>A Life in Music & Stories</div>
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", padding: "0 20px 56px", fontFamily: "'Georgia', serif", textAlign: "center", backgroundColor: STYLES.bg, backgroundImage: `linear-gradient(to bottom, rgba(15,27,45,0.05) 0%, rgba(15,27,45,0.35) 50%, rgba(15,27,45,0.94) 88%), url(/marty.jpg)`, backgroundSize: "cover", backgroundPosition: "center top" }}>
+        <div style={{ color: STYLES.gold, fontSize: 12, letterSpacing: 4, textTransform: "uppercase", marginBottom: 12, textShadow: "0 1px 8px rgba(0,0,0,0.8)" }}>The Story of</div>
+        <div style={{ color: STYLES.ivory, fontSize: 36, fontWeight: "bold", marginBottom: 8, textShadow: "0 2px 12px rgba(0,0,0,0.8)" }}>Marty Kupersmith</div>
+        <div style={{ color: STYLES.ivory, opacity: 0.85, fontSize: 14, marginBottom: 36, textShadow: "0 1px 8px rgba(0,0,0,0.8)" }}>A Life in Music & Stories</div>
         <button
           onClick={beginSession}
-          style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 16, padding: "22px 44px", fontSize: 22, cursor: "pointer", fontFamily: "'Georgia', serif", boxShadow: "0 4px 24px rgba(184,92,58,0.5)" }}
+          style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 16, padding: "22px 44px", fontSize: 22, cursor: "pointer", fontFamily: "'Georgia', serif", boxShadow: "0 4px 24px rgba(0,0,0,0.6)" }}
         >
           Tap to begin
         </button>
