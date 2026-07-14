@@ -12,8 +12,8 @@ const PHRASES = {
   GREETING: "Hi Marty! Do you have a story for me, or should I interview you? Tap a button below.",
   GO_AHEAD: "Go ahead, Marty. I'm listening. Tap the button when you're done.",
   ACK: "Hang on Marty, let me write that all down. I have a follow-up question for you. One sec.",
-  MISSED: "I'm sorry Marty, I didn't catch that. Tap the microphone and tell me one more time.",
-  GLITCH: "I'm sorry Marty, my ears glitched and I missed that. Let's try again.",
+  MISSED: "I'm sorry Marty, I didn't catch that. Tell me one more time.",
+  GLITCH: "I'm sorry Marty, my ears glitched and I missed that. Tell me one more time.",
 };
 
 
@@ -184,14 +184,17 @@ export default function App() {
 
   function playBuffer(audioBuf) {
     return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
       try {
         const source = audioCtxRef.current.createBufferSource();
         source.buffer = audioBuf;
         source.connect(audioCtxRef.current.destination);
-        source.onended = resolve;
+        source.onended = finish;
         speakSourceRef.current = source;
         source.start(0);
-      } catch { resolve(); }
+        setTimeout(finish, (audioBuf.duration + 1.5) * 1000);
+      } catch { finish(); }
     });
   }
 
@@ -214,7 +217,7 @@ export default function App() {
             u.rate = 0.92;
             u.onend = resolve;
             window.speechSynthesis.speak(u);
-            setTimeout(resolve, 20000);
+            setTimeout(resolve, 15000);
           } catch { resolve(); }
         });
       }
@@ -324,6 +327,7 @@ export default function App() {
   }
 
   async function startFreeTell() {
+    unlockAudio();
     isFreeTellRef.current = true;
     setCurrentChapter("Your Story");
     setIsSaved(false);
@@ -333,6 +337,7 @@ export default function App() {
   }
 
   async function askMeQuestion() {
+    unlockAudio();
     isFreeTellRef.current = false;
     fetchNextQuestion(entriesRef.current);
   }
@@ -355,7 +360,8 @@ Like a good reporter, ask ONE follow-up question digging into the most interesti
       const parsed = JSON.parse(clean);
       setCurrentChapter(parsed.chapter || lastEntry.chapter);
       setIsLoading(false);
-      speakAndWait(parsed.question);
+      await speakAndWait(parsed.question);
+      startRecording();
     } catch {
       setIsLoading(false);
       fetchNextQuestion(allEntries);
@@ -390,12 +396,14 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
       const parsed = JSON.parse(clean);
       setCurrentChapter(parsed.chapter);
       setIsLoading(false);
-      speakAndWait(parsed.question);
+      await speakAndWait(parsed.question);
+      startRecording();
     } catch {
       const fallback = "Tell me about a moment from your life that you still think about.";
       setCurrentChapter("Early Life");
       setIsLoading(false);
-      speakAndWait(fallback);
+      await speakAndWait(fallback);
+      startRecording();
     }
   }
 
@@ -442,14 +450,19 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
       const parsed = JSON.parse(clean);
       setCurrentChapter(parsed.chapter || "Wild Stories");
       setIsLoading(false);
-      speakAndWait(parsed.question);
+      setIsSaved(false);
+      e.target.value = "";
+      await speakAndWait(parsed.question);
+      startRecording();
+      return;
     } catch {
       setCurrentChapter("Wild Stories");
       setIsLoading(false);
-      speakAndWait("What a great picture, Marty. Tell me about it — who's there, and when was this?");
+      setIsSaved(false);
+      e.target.value = "";
+      await speakAndWait("What a great picture, Marty. Tell me about it — who's there, and when was this?");
+      startRecording();
     }
-    setIsSaved(false);
-    e.target.value = "";
   }
 
   async function startRecording() {
@@ -491,8 +504,8 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
 
     if (blob.size < 1000) {
       setIsRecording(false);
-      setCurrentChapter("Hello");
-      speakAndWait(PHRASES.GLITCH);
+      await speakAndWait(PHRASES.GLITCH);
+      startRecording();
       return;
     }
 
@@ -536,7 +549,9 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
 
       fetchFollowUp(entry, newEntries);
     } else {
-      speakAndWait(PHRASES.MISSED);
+      setIsSaved(false);
+      await speakAndWait(PHRASES.MISSED);
+      startRecording();
     }
   }
 
@@ -637,11 +652,6 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
           <div style={{ textAlign: "center", width: "100%", maxWidth: 480 }}>
             {!isRecording ? (
               <div>
-                <button onClick={startRecording} style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 32, cursor: "pointer", boxShadow: "0 4px 20px rgba(184,92,58,0.4)" }}>
-                  🎙️
-                </button>
-                <div style={{ color: STYLES.muted, fontSize: 12, marginTop: 14 }}>Tap the mic to answer, or pick below</div>
-
                 <div style={{ marginTop: 30, display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
                   <button onClick={startFreeTell} style={{ background: STYLES.rust, color: STYLES.ivory, border: "none", borderRadius: 14, padding: "18px 30px", fontSize: 18, cursor: "pointer", fontFamily: "'Georgia', serif", width: "100%", maxWidth: 320 }}>
                     ✨ Story Mode
