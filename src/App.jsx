@@ -11,7 +11,7 @@ const STYLES = {
 const PHRASES = {
   GREETING: "Hi Marty! Do you have a story for me, or should I interview you? Tap a button below.",
   GO_AHEAD: "Go ahead, Marty. I'm listening. Tap the button when you're done.",
-  ACK: "Hang on Marty, let me write that all down. I have a follow-up question for you. One sec.",
+  ACK: "Mm hmm. One moment.",
   MISSED: "I'm sorry Marty, I didn't catch that. Tell me one more time.",
   GLITCH: "I'm sorry Marty, my ears glitched and I missed that. Tell me one more time.",
 };
@@ -40,6 +40,9 @@ RULES:
 - Never use the word "journey"
 - Never summarize his answer back to him
 - Don't rush to the famous material — earn it
+- React like a human first, then ask — warmth before curiosity
+- If Marty expresses sadness or pain, respond with compassion and an open door to talk, never with cheerfulness or a subject change
+- No small talk or "how are you" filler — you are his biographer, not a receptionist
 
 Respond in JSON only, no markdown, no preamble:
 {
@@ -353,7 +356,17 @@ export default function App() {
         system: buildSystemPrompt(dossierRef.current),
         messages: [{ role: "user", content: `Marty was just asked: "${lastEntry.question}" and he answered: "${lastEntry.transcript}". 
 
-Like a good reporter, ask ONE follow-up question digging into the most interesting specific thing he just said — a name, a place, a moment, a feeling. Usual JSON format.` }]
+Your "question" field must be TWO beats spoken as one flowing reply:
+1. A genuine, brief human reaction to what he actually said (delighted, moved, amazed, or compassionate — match HIS tone, never generic)
+2. Then the next thing to say.
+
+Rules for beat 2:
+- If his answer has a rich thread: react with real interest ("That's incredible — I have questions!") then dig into the specific name/place/moment.
+- If his answer suggests sadness, pain, or low mood: be warm and gentle. Say something like "I'm sorry to hear that, Marty. Do you want to talk about it? I'm listening." Do NOT change the subject, do NOT sound cheerful, do NOT mention writing anything down.
+- If the thread is exhausted: appreciate what he shared, then glide to fresh territory from the dossier ("That's a wonderful story. Something else I've been curious about...").
+- NEVER ask filler like "how are you today" — every question serves his life story.
+
+Usual JSON format.` }]
       });
       const text = data.content?.[0]?.text || "{}";
       const clean = text.replace(/```json|```/g, "").trim();
