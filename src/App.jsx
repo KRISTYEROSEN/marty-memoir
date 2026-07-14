@@ -8,6 +8,17 @@ const STYLES = {
   ivory: "#F2EDDF", rust: "#B85C3A", muted: "#8A9BB0", border: "#2A3D57",
 };
 
+const PHRASES = {
+  GREETING: "Hi Marty! Do you have a story for me today, or should I ask you a question?",
+  GO_AHEAD: "Go ahead, Marty. I'm listening.",
+  ACK: "Got it, Marty. Hang on one second while I write this down.",
+  RETRY: "Sorry Marty, I didn't catch that. Say story, or question.",
+  NO_RUSH: "No rush, Marty. Tap a button below whenever you're ready.",
+  MISSED: "I'm sorry Marty, I didn't catch that. Tap the microphone and tell me one more time.",
+  GLITCH: "I'm sorry Marty, my ears glitched and I missed that. Let's try again.",
+};
+
+
 function buildSystemPrompt(dossier) {
   return `You are an AI biographer interviewing Marty Kupersmith (stage name Marty Sanders), an 82-year-old musician from Brooklyn NY who has lived in Warwick NY for many years. He was a guitarist and songwriter for Jay and the Americans and wants to write a book about his life.
 
@@ -104,6 +115,9 @@ export default function App() {
   const speakSourceRef = useRef(null);
   const isFreeTellRef = useRef(false);
   const entriesRef = useRef([]);
+  const voiceCacheRef = useRef({});
+  const playbackQueueRef = useRef(Promise.resolve());
+  const vadRef = useRef({ heardSpeech: false, silentChunks: 0 });
 
   useEffect(() => {
     init();
@@ -150,39 +164,65 @@ export default function App() {
     try { window.speechSynthesis.cancel(); } catch {}
   }
 
-  function speakAndWait(text) {
-    return new Promise(async (resolve) => {
-      if (!text) return resolve();
-      setCurrentQuestion(text);
-      const safety = setTimeout(resolve, 25000);
+  async function fetchVoiceBuffer(text) {
+    const res = await fetch("/api/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    if (!res.ok) throw new Error("speech failed");
+    const buf = await res.arrayBuffer();
+    return await audioCtxRef.current.decodeAudioData(buf);
+  }
+
+  function prefetchPhrases() {
+    Object.values(PHRASES).forEach(async (text) => {
+      if (voiceCacheRef.current[text]) return;
       try {
-        unlockAudio();
-        const res = await fetch("/api/speak", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text })
-        });
-        if (!res.ok) throw new Error("speech failed");
-        const buf = await res.arrayBuffer();
-        const audioBuf = await audioCtxRef.current.decodeAudioData(buf);
+        voiceCacheRef.current[text] = await fetchVoiceBuffer(text);
+      } catch {}
+    });
+  }
+
+  function playBuffer(audioBuf) {
+    return new Promise((resolve) => {
+      try {
         const source = audioCtxRef.current.createBufferSource();
         source.buffer = audioBuf;
         source.connect(audioCtxRef.current.destination);
-        source.onended = () => { clearTimeout(safety); resolve(); };
+        source.onended = resolve;
         speakSourceRef.current = source;
         source.start(0);
-      } catch {
-        try {
-          const u = new SpeechSynthesisUtterance(text);
-          u.rate = 0.92;
-          u.onend = () => { clearTimeout(safety); resolve(); };
-          window.speechSynthesis.speak(u);
-        } catch {
-          clearTimeout(safety);
-          resolve();
-        }
-      }
+      } catch { resolve(); }
     });
+  }
+
+  function speakAndWait(text) {
+    if (!text) return Promise.resolve();
+    const run = async () => {
+      setCurrentQuestion(text);
+      try {
+        unlockAudio();
+        let audioBuf = voiceCacheRef.current[text];
+        if (!audioBuf) {
+          audioBuf = await fetchVoiceBuffer(text);
+          voiceCacheRef.current[text] = audioBuf;
+        }
+        await playBuffer(audioBuf);
+      } catch {
+        await new Promise((resolve) => {
+          try {
+            const u = new SpeechSynthesisUtterance(text);
+            u.rate = 0.92;
+            u.onend = resolve;
+            window.speechSynthesis.speak(u);
+            setTimeout(resolve, 20000);
+          } catch { resolve(); }
+        });
+      }
+    };
+    playbackQueueRef.current = playbackQueueRef.current.then(run, run);
+    return playbackQueueRef.current;
   }
 
   async function callClaude(body) {
@@ -232,8 +272,19 @@ export default function App() {
     const source = ctx.createMediaStreamSource(stream);
     const processor = ctx.createScriptProcessor(4096, 1, 1);
     wavChunksRef.current = [];
+    vadRef.current = { heardSpeech: false, silentChunks: 0 };
     processor.onaudioprocess = (e) => {
-      wavChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      const data = e.inputBuffer.getChannelData(0);
+      wavChunksRef.current.push(new Float32Array(data));
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 8) sum += data[i] * data[i];
+      const rms = Math.sqrt(sum / (data.length / 8));
+      if (rms > 0.015) {
+        vadRef.current.heardSpeech = true;
+        vadRef.current.silentChunks = 0;
+      } else if (vadRef.current.heardSpeech) {
+        vadRef.current.silentChunks++;
+      }
     };
     const silence = ctx.createGain();
     silence.gain.value = 0;
@@ -270,7 +321,8 @@ export default function App() {
     }
     setView("marty");
     setCurrentChapter("Hello");
-    await speakAndWait("Hi Marty! Do you have a story for me today, or should I ask you a question?");
+    prefetchPhrases();
+    await speakAndWait(PHRASES.GREETING);
     setTimeout(() => listenShort(1), 400);
   }
 
@@ -278,12 +330,22 @@ export default function App() {
     setIsListeningIntent(true);
     try {
       await startWavCapture();
-      setTimeout(async () => {
+      const startedAt = Date.now();
+      const finish = async () => {
         const blob = stopWavCapture();
         const result = await transcribeBlob(blob);
         setIsListeningIntent(false);
         routeIntent(result.transcript, attempt);
-      }, 7000);
+      };
+      const poll = setInterval(() => {
+        const elapsed = Date.now() - startedAt;
+        const v = vadRef.current;
+        const doneTalking = v.heardSpeech && v.silentChunks > 14;
+        if ((elapsed > 1500 && doneTalking) || elapsed > 8000) {
+          clearInterval(poll);
+          finish();
+        }
+      }, 100);
     } catch {
       setIsListeningIntent(false);
       setCurrentQuestion("Tap a button below whenever you're ready, Marty.");
@@ -318,11 +380,11 @@ export default function App() {
       fetchNextQuestion(entriesRef.current);
     } else if (attempt === 1) {
       setCurrentChapter("Hello");
-      await speakAndWait("Sorry Marty, I didn't catch that. Say story, or question.");
+      await speakAndWait(PHRASES.RETRY);
       setTimeout(() => listenShort(2), 400);
     } else {
       setCurrentChapter("Hello");
-      speakAndWait("No rush, Marty. Tap a button below whenever you're ready.");
+      speakAndWait(PHRASES.NO_RUSH);
     }
   }
 
@@ -331,7 +393,7 @@ export default function App() {
     setCurrentChapter("Your Story");
     setIsSaved(false);
     setCurrentPhoto(null);
-    await speakAndWait("Go ahead, Marty — I'm listening.");
+    await speakAndWait(PHRASES.GO_AHEAD);
     startRecording();
   }
 
@@ -466,6 +528,26 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
     }
   }
 
+  function classifyChapterInBackground(entry) {
+    callClaude({
+      model: "claude-sonnet-4-6",
+      max_tokens: 200,
+      messages: [{ role: "user", content: `Marty just told this story unprompted: "${(entry.transcript || "").slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
+    }).then((data) => {
+      const ch = data.content?.[0]?.text?.trim();
+      if (ch && CHAPTERS.includes(ch) && ch !== entry.chapter) {
+        const updated = { ...entry, chapter: ch };
+        entriesRef.current = entriesRef.current.map(e => e.id === entry.id ? updated : e);
+        setEntries(prev => prev.map(e => e.id === entry.id ? updated : e));
+        fetch("/api/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated)
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }
+
   async function stopAndSave() {
     if (!micProcessorRef.current) return;
     clearInterval(timerRef.current);
@@ -475,12 +557,15 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
     if (blob.size < 1000) {
       setIsRecording(false);
       setCurrentChapter("Hello");
-      speakAndWait("I'm sorry Marty, my ears glitched and I missed that. Let's try again.");
+      speakAndWait(PHRASES.GLITCH);
       return;
     }
 
     setIsRecording(false);
-    setIsLoading(true);
+    setIsSaved(true);
+
+    // Instant acknowledgment (cached voice) while the work happens in parallel
+    speakAndWait(PHRASES.ACK);
 
     const result = await transcribeBlob(blob);
 
@@ -495,41 +580,28 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
       date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
     };
 
-    if (isFreeTellRef.current && entry.transcript) {
-      try {
-        const data = await callClaude({
-          model: "claude-sonnet-4-6",
-          max_tokens: 200,
-          messages: [{ role: "user", content: `Marty just told this story unprompted: "${entry.transcript.slice(0, 800)}". Which chapter does it belong to? Choose exactly one: ${CHAPTERS.join(", ")}. Reply with ONLY the chapter name, nothing else.` }]
-        });
-        const ch = data.content?.[0]?.text?.trim();
-        if (ch && CHAPTERS.includes(ch)) entry.chapter = ch;
-      } catch {}
-      isFreeTellRef.current = false;
-    }
+    const wasFreeTell = isFreeTellRef.current;
+    isFreeTellRef.current = false;
 
-    const newEntries = [...entries, entry];
-    entriesRef.current = newEntries;
-    setEntries(newEntries);
-    try {
-      const light = newEntries.map(e => ({ ...e, photo: null }));
-      localStorage.setItem("marty_entries", JSON.stringify(light));
-    } catch {}
-    try {
-      await fetch("/api/save", {
+    if (entry.transcript && entry.transcript.trim().length > 10) {
+      const newEntries = [...entriesRef.current, entry];
+      entriesRef.current = newEntries;
+      setEntries(newEntries);
+      try {
+        const light = newEntries.map(e => ({ ...e, photo: null }));
+        localStorage.setItem("marty_entries", JSON.stringify(light));
+      } catch {}
+      fetch("/api/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(entry)
-      });
-    } catch {}
+      }).catch(() => {});
 
-    setIsLoading(false);
+      if (wasFreeTell) classifyChapterInBackground(entry);
 
-    if (entry.transcript && entry.transcript.trim().length > 10) {
-      setIsSaved(true);
-      setTimeout(() => fetchFollowUp(entry, newEntries), 1500);
+      fetchFollowUp(entry, newEntries);
     } else {
-      speakAndWait("I'm sorry Marty, I didn't catch that. Tap the microphone and tell me one more time.");
+      speakAndWait(PHRASES.MISSED);
     }
   }
 
