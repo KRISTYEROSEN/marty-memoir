@@ -11,10 +11,22 @@ const STYLES = {
 const PHRASES = {
   GREETING: "Hi Marty! Do you have a story for me, or should I interview you? Tap a button below.",
   GO_AHEAD: "Go ahead, Marty. I'm listening. Tap the button when you're done.",
-  ACK: "Mm hmm. One moment.",
   MISSED: "I'm sorry Marty, I didn't catch that. Tell me one more time.",
   GLITCH: "I'm sorry Marty, my ears glitched and I missed that. Tell me one more time.",
+  GOODBYE: "Thank you, Marty. Your stories are safe with me. Come back anytime — I love hearing them.",
 };
+
+const ACKS = [
+  "Mm hmm. One moment.",
+  "Let me get this all down. One second, Marty.",
+  "Okay, hold on one second.",
+  "Give me just a moment, Marty.",
+  "Hang on, let me take this in.",
+];
+
+function pickAck() {
+  return ACKS[Math.floor(Math.random() * ACKS.length)];
+}
 
 
 function buildSystemPrompt(dossier) {
@@ -177,7 +189,7 @@ export default function App() {
   }
 
   function prefetchPhrases() {
-    Object.values(PHRASES).forEach(async (text) => {
+    [...Object.values(PHRASES), ...ACKS].forEach(async (text) => {
       if (voiceCacheRef.current[text]) return;
       try {
         voiceCacheRef.current[text] = await fetchVoiceBuffer(text);
@@ -509,6 +521,45 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
     }).catch(() => {});
   }
 
+  async function endSession() {
+    if (micProcessorRef.current) {
+      clearInterval(timerRef.current);
+      const duration = recordingSeconds;
+      const blob = stopWavCapture();
+      setIsRecording(false);
+      if (blob.size >= 1000) {
+        const question = currentQuestion;
+        const chapter = currentChapter;
+        (async () => {
+          try {
+            const result = await transcribeBlob(blob);
+            if (result.transcript && result.transcript.trim().length > 3) {
+              const entry = {
+                id: Date.now(), question, chapter,
+                audioUrl: result.audioUrl, duration,
+                transcript: result.transcript, photo: null,
+                date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+              };
+              entriesRef.current = [...entriesRef.current, entry];
+              setEntries(entriesRef.current);
+              fetch("/api/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(entry)
+              }).catch(() => {});
+            }
+          } catch {}
+        })();
+      }
+    }
+    isFreeTellRef.current = false;
+    setIsSaved(false);
+    setIsLoading(false);
+    setCurrentChapter("Goodbye");
+    await speakAndWait(PHRASES.GOODBYE);
+    setView("welcome");
+  }
+
   async function stopAndSave() {
     if (!micProcessorRef.current) return;
     clearInterval(timerRef.current);
@@ -526,7 +577,7 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
     setIsSaved(true);
 
     // Instant acknowledgment (cached voice) while the work happens in parallel
-    speakAndWait(PHRASES.ACK);
+    speakAndWait(pickAck());
 
     const result = await transcribeBlob(blob);
 
@@ -684,6 +735,11 @@ Like a good reporter: if there's a strong thread in his recent answers worth pul
                 <button onClick={stopAndSave} style={{ background: STYLES.gold, color: STYLES.bg, border: "none", borderRadius: "50%", width: 90, height: 90, fontSize: 18, fontWeight: "bold", cursor: "pointer", boxShadow: "0 4px 20px rgba(201,168,76,0.4)" }}>
                   DONE
                 </button>
+                <div style={{ marginTop: 24 }}>
+                  <button onClick={endSession} style={{ background: "transparent", color: STYLES.muted, border: `1px solid ${STYLES.border}`, borderRadius: 10, padding: "10px 20px", fontSize: 14, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
+                    🌙 That's all for today
+                  </button>
+                </div>
               </div>
             )}
           </div>
