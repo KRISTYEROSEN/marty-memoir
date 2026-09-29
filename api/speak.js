@@ -21,6 +21,7 @@ export default async function handler(req, res) {
     );
     if (!response.ok) {
       const err = await response.text();
+      console.error('ElevenLabs error:', response.status, err);
       return res.status(500).json({ error: err });
     }
     const audio = await response.arrayBuffer();
